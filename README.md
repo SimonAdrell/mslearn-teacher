@@ -1,4 +1,4 @@
-# Study Coach (Foundry Agent Interface)
+﻿# Study Coach (Foundry Agent Interface)
 
 This repository contains a v1 implementation of an AI-102 Study Coach interface:
 - `backend/src/Api`: ASP.NET Core API with Entra auth, study endpoints, and citation gate.
@@ -14,7 +14,7 @@ Foundry communication in the API uses `Azure.AI.Projects` (and `Azure.AI.Agents.
 dotnet restore StudyCoach.slnx
 dotnet build StudyCoach.slnx
 dotnet test backend/tests/Api.Tests/Api.Tests.csproj
-dotnet run --project backend/src/Api/Api.csproj
+dotnet run --project backend/src/Api/StudyCoach.BackendApi.csproj
 ```
 
 ## Run frontend

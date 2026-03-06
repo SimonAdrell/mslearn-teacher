@@ -1,9 +1,9 @@
-
-using Projects;
+﻿using Projects;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
-var backendApi = builder.AddProject<StudyCoach_BackendApi>("backendApi");
+var backendApi = builder.AddProject<StudyCoach_BackendApi>("backendApi")
+    .WithHttpHealthCheck("/health");
 
 builder.AddViteApp("web", "../../../frontend")
     .WithReference(backendApi)
