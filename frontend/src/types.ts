@@ -6,6 +6,8 @@ export type SkillArea = {
 
 export type SkillsOutlineResponse = {
   areas: SkillArea[];
+  citations?: Citation[];
+  isFromCache?: boolean;
 };
 
 export type Citation = {
@@ -21,17 +23,27 @@ export type StartSessionResponse = {
   welcomeMessage: string;
 };
 
+export type ChatMeta = {
+  skillOutlineArea: string;
+  mustKnow: string[];
+  examTraps: string[];
+  mcpVerified: boolean;
+  weakAreasUpdate?: string[];
+};
+
 export type ChatResponse = {
   answer: string;
   citations: Citation[];
   refused: boolean;
   refusalReason?: string;
+  meta?: ChatMeta;
 };
 
 export type QuizQuestionResponse = {
   questionId: string;
   question: string;
   choices?: string[];
+  citations?: Citation[];
 };
 
 export type QuizAnswerResponse = {

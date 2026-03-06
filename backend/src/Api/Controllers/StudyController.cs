@@ -8,6 +8,9 @@ namespace StudyCoach.BackendApi.Controllers;
 [Route("api/study")]
 public sealed class StudyController : ControllerBase
 {
+    private const string LearnRefusalMessage =
+        "I can't answer this from verified Microsoft Learn MCP sources right now. Please let me fetch relevant Learn MCP content first.";
+
     private readonly ISessionStore _sessionStore;
     private readonly IFoundryStudyCoachClient _coachClient;
     private readonly ISkillsOutlineProvider _skillsOutlineProvider;
@@ -48,50 +51,62 @@ public sealed class StudyController : ControllerBase
     [HttpPost("chat")]
     public async Task<ActionResult<ChatResponse>> Chat([FromBody] ChatRequest request, CancellationToken cancellationToken)
     {
-        if (!OwnsSession(request.SessionId))
+        if (!_sessionStore.TryGetSessionForUser(request.SessionId, GetCurrentUserId(), out var session) || session is null)
         {
             return NotFound(new { error = "Session not found." });
         }
 
-        var chatResult = await _coachClient.GetChatReplyAsync(request.SessionId, request.Message, cancellationToken);
-        if (chatResult.Citations.Count == 0)
+        var chatResult = await _coachClient.GetChatReplyAsync(request.SessionId, session.SkillArea, request.Message, cancellationToken);
+        if (chatResult.Refused || chatResult.Citations.Count == 0)
         {
             return Ok(new ChatResponse(
-                "I can't answer this from verified Microsoft Learn MCP sources right now. Please let me fetch relevant Learn MCP content first.",
+                LearnRefusalMessage,
                 [],
                 true,
-                "Missing Learn MCP citations."));
+                chatResult.RefusalReason ?? "Missing or invalid Learn MCP citations.",
+                null));
         }
 
-        return Ok(new ChatResponse(chatResult.Answer, chatResult.Citations, false, null));
+        return Ok(new ChatResponse(chatResult.Answer, chatResult.Citations, false, null, chatResult.Meta));
     }
 
     [HttpPost("quiz/next")]
     public async Task<ActionResult<QuizQuestionResponse>> NextQuizQuestion([FromBody] QuizNextRequest request, CancellationToken cancellationToken)
     {
-        if (!OwnsSession(request.SessionId))
+        if (!_sessionStore.TryGetSessionForUser(request.SessionId, GetCurrentUserId(), out var session) || session is null)
         {
             return NotFound(new { error = "Session not found." });
         }
 
-        var question = await _coachClient.GetNextQuizQuestionAsync(cancellationToken);
+        var question = await _coachClient.GetNextQuizQuestionAsync(request.SessionId, session.SkillArea, cancellationToken);
+        if ((question.Citations?.Count ?? 0) == 0)
+        {
+            return Ok(new QuizQuestionResponse(Guid.NewGuid(), LearnRefusalMessage, null, []));
+        }
+
         return Ok(question);
     }
 
     [HttpPost("quiz/answer")]
     public async Task<ActionResult<QuizAnswerResponse>> GradeQuizAnswer([FromBody] QuizAnswerRequest request, CancellationToken cancellationToken)
     {
-        if (!OwnsSession(request.SessionId))
+        if (!_sessionStore.TryGetSessionForUser(request.SessionId, GetCurrentUserId(), out var session) || session is null)
         {
             return NotFound(new { error = "Session not found." });
         }
 
-        var feedback = await _coachClient.GradeQuizAnswerAsync(request.QuestionId, request.Answer, cancellationToken);
+        var feedback = await _coachClient.GradeQuizAnswerAsync(
+            request.SessionId,
+            session.SkillArea,
+            request.QuestionId,
+            request.Answer,
+            cancellationToken);
+
         if (feedback.Citations.Count == 0)
         {
             return Ok(new QuizAnswerResponse(
                 false,
-                "I can't answer this from verified Microsoft Learn MCP sources right now. Please let me fetch relevant Learn MCP content first.",
+                LearnRefusalMessage,
                 "Always verify from Learn MCP.",
                 []));
         }
@@ -100,14 +115,9 @@ public sealed class StudyController : ControllerBase
     }
 
     [HttpGet("skills-outline")]
-    public ActionResult<SkillsOutlineResponse> SkillsOutline()
+    public async Task<ActionResult<SkillsOutlineResponse>> SkillsOutline(CancellationToken cancellationToken)
     {
-        return Ok(_skillsOutlineProvider.GetOutline());
-    }
-
-    private bool OwnsSession(Guid sessionId)
-    {
-        return _sessionStore.ExistsForUser(sessionId, GetCurrentUserId());
+        return Ok(await _skillsOutlineProvider.GetOutlineAsync(cancellationToken));
     }
 
     private string GetCurrentUserId()

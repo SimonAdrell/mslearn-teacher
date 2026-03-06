@@ -1,8 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
 import { getNextQuestion, getSkillsOutline, sendChat, startSession, submitAnswer } from "./api";
-import type { ChatResponse, QuizAnswerResponse, QuizQuestionResponse, SkillArea } from "./types";
+import type { ChatResponse, Citation, QuizAnswerResponse, QuizQuestionResponse, SkillArea } from "./types";
 
 const MODES = ["Learn", "Quiz", "Review mistakes", "Rapid cram"] as const;
+
+function formatCitation(citation: Citation) {
+  return `${citation.title} (${citation.retrievedAt})`;
+}
+
+function withChoiceLabel(choice: string, index: number) {
+  const labels = ["A", "B", "C"];
+  const label = labels[index] ?? String.fromCharCode(65 + index);
+
+  if (/^[A-C]\)/i.test(choice.trim())) {
+    return choice;
+  }
+
+  return `${label}) ${choice}`;
+}
 
 export function App() {
   const [areas, setAreas] = useState<SkillArea[]>([]);
@@ -13,6 +28,7 @@ export function App() {
   const [chatLog, setChatLog] = useState<ChatResponse[]>([]);
   const [quizQuestion, setQuizQuestion] = useState<QuizQuestionResponse | null>(null);
   const [quizFeedback, setQuizFeedback] = useState<QuizAnswerResponse | null>(null);
+  const [weakAreaCounts, setWeakAreaCounts] = useState<Record<string, number>>({});
   const [error, setError] = useState<string>("");
 
   useEffect(() => {
@@ -26,6 +42,11 @@ export function App() {
 
   const canStart = useMemo(() => mode.length > 0 && skillArea.length > 0, [mode, skillArea]);
 
+  const prioritizedWeakArea = useMemo(() => {
+    const sorted = Object.entries(weakAreaCounts).sort((a, b) => b[1] - a[1]);
+    return sorted[0]?.[0];
+  }, [weakAreaCounts]);
+
   async function onStartSession() {
     try {
       setError("");
@@ -34,6 +55,7 @@ export function App() {
       setChatLog([]);
       setQuizQuestion(null);
       setQuizFeedback(null);
+      setWeakAreaCounts({});
     } catch (err) {
       setError((err as Error).message);
     }
@@ -47,6 +69,17 @@ export function App() {
       const response = await sendChat(sessionId, chatInput);
       setChatLog((prev) => [...prev, response]);
       setChatInput("");
+
+      const weakAreas = response.meta?.weakAreasUpdate ?? [];
+      if (weakAreas.length > 0) {
+        setWeakAreaCounts((prev) => {
+          const next = { ...prev };
+          weakAreas.forEach((area) => {
+            next[area] = (next[area] ?? 0) + 1;
+          });
+          return next;
+        });
+      }
     } catch (err) {
       setError((err as Error).message);
     }
@@ -115,16 +148,36 @@ export function App() {
             Send
           </button>
         </div>
-        <ul>
+
+        {prioritizedWeakArea && <p className="hint">Prioritized next topic: {prioritizedWeakArea}</p>}
+
+        <ul className="chat-list">
           {chatLog.map((entry, index) => (
-            <li key={`${entry.answer}-${index}`}>
+            <li key={`${entry.answer}-${index}`} className="chat-entry">
               <p>{entry.answer}</p>
+              {entry.meta?.mcpVerified && <p className="verified">Verified from Learn MCP</p>}
               {entry.refused && <p className="warning">{entry.refusalReason}</p>}
-              {entry.citations.map((citation) => (
-                <a key={citation.url} href={citation.url} target="_blank" rel="noreferrer">
-                  {citation.title}
-                </a>
-              ))}
+
+              {entry.meta && (
+                <details>
+                  <summary>Exam Focus</summary>
+                  <p>Skill area: {entry.meta.skillOutlineArea}</p>
+                  {entry.meta.mustKnow.length > 0 && <p>Must-know: {entry.meta.mustKnow.join("; ")}</p>}
+                  {entry.meta.examTraps.length > 0 && <p>Exam traps: {entry.meta.examTraps.join("; ")}</p>}
+                </details>
+              )}
+
+              {entry.citations.length > 0 && (
+                <ul className="citation-list">
+                  {entry.citations.map((citation) => (
+                    <li key={`${citation.url}-${citation.retrievedAt}`}>
+                      <a href={citation.url} target="_blank" rel="noreferrer">
+                        {formatCitation(citation)}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </li>
           ))}
         </ul>
@@ -139,12 +192,27 @@ export function App() {
           <div>
             <p>{quizQuestion.question}</p>
             <div className="choices">
-              {(quizQuestion.choices ?? []).map((choice) => (
-                <button key={choice} onClick={() => onAnswer(choice)}>
-                  {choice}
-                </button>
-              ))}
+              {(quizQuestion.choices ?? []).map((choice, index) => {
+                const labeledChoice = withChoiceLabel(choice, index);
+                return (
+                  <button key={labeledChoice} onClick={() => onAnswer(labeledChoice)}>
+                    {labeledChoice}
+                  </button>
+                );
+              })}
             </div>
+
+            {(quizQuestion.citations?.length ?? 0) > 0 && (
+              <ul className="citation-list">
+                {quizQuestion.citations!.map((citation) => (
+                  <li key={`${citation.url}-${citation.retrievedAt}`}>
+                    <a href={citation.url} target="_blank" rel="noreferrer">
+                      {formatCitation(citation)}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
         {quizFeedback && (
@@ -152,11 +220,15 @@ export function App() {
             <p>{quizFeedback.correct ? "Correct" : "Incorrect"}</p>
             <p>{quizFeedback.explanation}</p>
             <p>{quizFeedback.memoryRule}</p>
-            {quizFeedback.citations.map((citation) => (
-              <a key={citation.url} href={citation.url} target="_blank" rel="noreferrer">
-                {citation.title}
-              </a>
-            ))}
+            <ul className="citation-list">
+              {quizFeedback.citations.map((citation) => (
+                <li key={`${citation.url}-${citation.retrievedAt}`}>
+                  <a href={citation.url} target="_blank" rel="noreferrer">
+                    {formatCitation(citation)}
+                  </a>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
       </section>
