@@ -1,11 +1,13 @@
 using StudyCoach.BackendApi.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
 var authDisabled = builder.Configuration.GetValue<bool>("Auth:DisableAuth");
 
 builder.Services.AddProblemDetails();
 builder.Services.AddControllers();
+builder.Services.AddOpenApi();
 builder.Services.Configure<FoundryOptions>(builder.Configuration.GetSection("Foundry"));
 var appInsightsConnectionString = builder.Configuration["ApplicationInsights:ConnectionString"];
 if (!string.IsNullOrWhiteSpace(appInsightsConnectionString))
@@ -31,6 +33,12 @@ builder.Services.AddSingleton<ISkillsOutlineProvider, SkillsOutlineProvider>();
 builder.Services.AddSingleton<ISessionStore, InMemorySessionStore>();
 
 var app = builder.Build();
+
+if (app.Environment.IsDevelopment())
+{
+    app.MapOpenApi();
+    app.MapScalarApiReference();
+}
 
 app.UseExceptionHandler();
 app.UseHttpsRedirection();
