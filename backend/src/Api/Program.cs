@@ -1,0 +1,54 @@
+using StudyCoach.BackendApi.Services;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+
+var builder = WebApplication.CreateBuilder(args);
+var authDisabled = builder.Configuration.GetValue<bool>("Auth:DisableAuth");
+
+builder.Services.AddProblemDetails();
+builder.Services.AddControllers();
+builder.Services.Configure<FoundryOptions>(builder.Configuration.GetSection("Foundry"));
+var appInsightsConnectionString = builder.Configuration["ApplicationInsights:ConnectionString"];
+if (!string.IsNullOrWhiteSpace(appInsightsConnectionString))
+{
+    builder.Services.AddApplicationInsightsTelemetry();
+}
+
+if (!authDisabled)
+{
+    builder.Services
+        .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+        .AddJwtBearer(options =>
+        {
+            options.Authority = builder.Configuration["Auth:Authority"];
+            options.Audience = builder.Configuration["Auth:Audience"];
+            options.RequireHttpsMetadata = true;
+        });
+    builder.Services.AddAuthorization();
+}
+
+builder.Services.AddSingleton<IFoundryStudyCoachClient, FoundryStudyCoachClient>();
+builder.Services.AddSingleton<ISkillsOutlineProvider, SkillsOutlineProvider>();
+builder.Services.AddSingleton<ISessionStore, InMemorySessionStore>();
+
+var app = builder.Build();
+
+app.UseExceptionHandler();
+app.UseHttpsRedirection();
+if (!authDisabled)
+{
+    app.UseAuthentication();
+    app.UseAuthorization();
+}
+
+if (!authDisabled)
+{
+    app.MapControllers().RequireAuthorization();
+}
+else
+{
+    app.MapControllers();
+}
+
+app.Run();
+
+public partial class Program;

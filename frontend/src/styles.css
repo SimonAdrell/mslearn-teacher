@@ -1,0 +1,52 @@
+:root {
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  color: #102a43;
+  background: linear-gradient(180deg, #f0f4f8 0%, #d9e2ec 100%);
+}
+
+body {
+  margin: 0;
+}
+
+.layout {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 24px;
+  display: grid;
+  gap: 16px;
+}
+
+.panel {
+  background: #ffffff;
+  border: 1px solid #bcccdc;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  align-items: center;
+}
+
+input,
+select,
+button {
+  padding: 8px;
+}
+
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.warning {
+  color: #9f1239;
+}
+
+.error {
+  color: #991b1b;
+  font-weight: 600;
+}

@@ -1,0 +1,42 @@
+.dotnet/
+**/bin/
+**/obj/
+
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/.env.local
+
+backend/src/Api/appsettings.Local.json
+backend/src/Api/appsettings.Development.json
+
+# IDE/editor
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.swp
+*.tmp
+
+# Logs and diagnostics
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Test/coverage artifacts
+TestResults/
+**/TestResults/
+coverage/
+*.coverage
+*.coveragexml
+*.trx
+
+# OS files
+.DS_Store
+Thumbs.db
