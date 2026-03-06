@@ -1,8 +1,9 @@
-<Solution>
+﻿<Solution>
   <Folder Name="/backend/" />
   <Folder Name="/backend/src/">
     <Project Path="backend/src/Api/StudyCoach.BackendApi.csproj" />
     <Project Path="backend/src/AppHost/StudyCoach.AppHost.csproj" />
+    <Project Path="backend/src/ServiceDefaults/StudyCoach.ServiceDefaults.csproj" />
   </Folder>
   <Folder Name="/backend/tests/">
     <Project Path="backend/tests/Api.Tests/Api.Tests.csproj" />
