@@ -1,7 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
-using StudyCoach.BackendApi.Services;
 using FluentAssertions;
+using StudyCoach.BackendApi.Services;
 
 namespace Api.Tests;
 
@@ -47,6 +47,24 @@ public class StudyEndpointsTests
         payload.Should().NotBeNull();
         payload!.Refused.Should().BeTrue();
         payload.Answer.Should().Contain("I can't answer this from verified Microsoft Learn MCP sources right now");
+        payload.RefusalReason.Should().Be("No citations");
+    }
+
+    [Fact]
+    public async Task QuizNext_WithoutCitations_ReturnsRefusalPrompt()
+    {
+        await using var factory = new StudyCoachApiFactory(new NoCitationFoundryClient());
+        using var client = factory.CreateAuthenticatedClient();
+
+        var session = await (await client.PostAsJsonAsync("/api/study/session/start", new StartSessionRequest("Quiz", "Implement generative AI solutions")))
+            .Content.ReadFromJsonAsync<StartSessionResponse>();
+
+        var response = await client.PostAsJsonAsync("/api/study/quiz/next", new QuizNextRequest(session!.SessionId));
+        var payload = await response.Content.ReadFromJsonAsync<QuizQuestionResponse>();
+
+        payload.Should().NotBeNull();
+        payload!.Choices.Should().BeNull();
+        payload.Question.Should().Contain("I can't answer this from verified Microsoft Learn MCP sources right now");
     }
 
     [Fact]
@@ -68,13 +86,13 @@ public class StudyEndpointsTests
 
     private sealed class NoCitationFoundryClient : IFoundryStudyCoachClient
     {
-        public Task<FoundryChatResult> GetChatReplyAsync(Guid sessionId, string message, CancellationToken cancellationToken) =>
-            Task.FromResult(new FoundryChatResult("answer-without-source", []));
+        public Task<FoundryChatResult> GetChatReplyAsync(Guid sessionId, string skillArea, string message, CancellationToken cancellationToken) =>
+            Task.FromResult(new FoundryChatResult("answer-without-source", [], null, true, "No citations"));
 
-        public Task<QuizQuestionResponse> GetNextQuizQuestionAsync(CancellationToken cancellationToken) =>
-            Task.FromResult(new QuizQuestionResponse(Guid.NewGuid(), "q", ["a"]));
+        public Task<QuizQuestionResponse> GetNextQuizQuestionAsync(Guid sessionId, string skillArea, CancellationToken cancellationToken) =>
+            Task.FromResult(new QuizQuestionResponse(Guid.NewGuid(), "q", ["A) a", "B) b", "C) c"], []));
 
-        public Task<QuizAnswerResponse> GradeQuizAnswerAsync(Guid questionId, string answer, CancellationToken cancellationToken) =>
+        public Task<QuizAnswerResponse> GradeQuizAnswerAsync(Guid sessionId, string skillArea, Guid questionId, string answer, CancellationToken cancellationToken) =>
             Task.FromResult(new QuizAnswerResponse(false, "e", "m", []));
     }
 }

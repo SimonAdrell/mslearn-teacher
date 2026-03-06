@@ -9,15 +9,34 @@ public record StartSessionRequest(string Mode, string SkillArea);
 public record StartSessionResponse(Guid SessionId, string Mode, string SkillArea, string WelcomeMessage);
 
 public record ChatRequest(Guid SessionId, string Message);
-public record ChatResponse(string Answer, IReadOnlyList<Citation> Citations, bool Refused, string? RefusalReason);
+public record ChatResponse(
+    string Answer,
+    IReadOnlyList<Citation> Citations,
+    bool Refused,
+    string? RefusalReason,
+    ChatMeta? Meta = null);
 
 public record QuizNextRequest(Guid SessionId);
-public record QuizQuestionResponse(Guid QuestionId, string Question, IReadOnlyList<string>? Choices);
+public record QuizQuestionResponse(
+    Guid QuestionId,
+    string Question,
+    IReadOnlyList<string>? Choices,
+    IReadOnlyList<Citation>? Citations = null);
 
 public record QuizAnswerRequest(Guid SessionId, Guid QuestionId, string Answer);
 public record QuizAnswerResponse(bool Correct, string Explanation, string MemoryRule, IReadOnlyList<Citation> Citations);
 
 public record Citation(string Title, string Url, DateOnly RetrievedAt);
 
-public record SkillsOutlineResponse(IReadOnlyList<SkillArea> Areas);
+public record ChatMeta(
+    string SkillOutlineArea,
+    IReadOnlyList<string> MustKnow,
+    IReadOnlyList<string> ExamTraps,
+    bool McpVerified,
+    IReadOnlyList<string>? WeakAreasUpdate = null);
+
+public record SkillsOutlineResponse(
+    IReadOnlyList<SkillArea> Areas,
+    IReadOnlyList<Citation>? Citations = null,
+    bool IsFromCache = false);
 public record SkillArea(string Name, string WeightPercent, IReadOnlyList<string> Includes);

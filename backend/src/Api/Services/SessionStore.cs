@@ -6,6 +6,7 @@ public interface ISessionStore
 {
     StudySession StartSession(string mode, string skillArea, string userId);
     bool ExistsForUser(Guid sessionId, string userId);
+    bool TryGetSessionForUser(Guid sessionId, string userId, out StudySession? session);
 }
 
 public sealed class InMemorySessionStore : ISessionStore
@@ -21,12 +22,25 @@ public sealed class InMemorySessionStore : ISessionStore
 
     public bool ExistsForUser(Guid sessionId, string userId)
     {
-        if (!_sessions.TryGetValue(sessionId, out var session))
+        return TryGetSessionForUser(sessionId, userId, out _);
+    }
+
+    public bool TryGetSessionForUser(Guid sessionId, string userId, out StudySession? session)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var existing))
         {
+            session = null;
             return false;
         }
 
-        return string.Equals(session.UserId, userId, StringComparison.Ordinal);
+        if (!string.Equals(existing.UserId, userId, StringComparison.Ordinal))
+        {
+            session = null;
+            return false;
+        }
+
+        session = existing;
+        return true;
     }
 }
 
