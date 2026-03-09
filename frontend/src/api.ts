@@ -1,4 +1,5 @@
 import type {
+  BootstrapSessionResponse,
   ChatResponse,
   QuizAnswerResponse,
   QuizQuestionResponse,
@@ -31,6 +32,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+export function bootstrapSession() {
+  return request<BootstrapSessionResponse>("/api/study/session/bootstrap", {
+    method: "POST"
+  });
 }
 
 export function getSkillsOutline() {

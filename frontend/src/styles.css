@@ -70,3 +70,25 @@ button {
   color: #991b1b;
   font-weight: 600;
 }
+
+.token-usage {
+  color: #0f4c81;
+  font-weight: 600;
+  margin-top: 6px;
+}
+
+.token-total-row {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.meta-chip {
+  margin: 0;
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: #e6f0fa;
+  color: #184a73;
+  font-weight: 700;
+}

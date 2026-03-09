@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { getNextQuestion, getSkillsOutline, sendChat, startSession, submitAnswer } from "./api";
-import type { ChatResponse, Citation, QuizAnswerResponse, QuizQuestionResponse, SkillArea } from "./types";
+import { bootstrapSession, getNextQuestion, sendChat, startSession, submitAnswer } from "./api";
+import type { ChatResponse, Citation, QuizAnswerResponse, QuizQuestionResponse, TokenUsage } from "./types";
 
 const MODES = ["Learn", "Quiz", "Review mistakes", "Rapid cram"] as const;
 
@@ -19,8 +19,13 @@ function withChoiceLabel(choice: string, index: number) {
   return `${label}) ${choice}`;
 }
 
+function formatUsage(usage: TokenUsage) {
+  return `PromptTokens: ${usage.promptTokens} | CompletionTokens: ${usage.completionTokens} | TotalTokens: ${usage.totalTokens}`;
+}
+
 export function App() {
-  const [areas, setAreas] = useState<SkillArea[]>([]);
+  const [areaOptions, setAreaOptions] = useState<string[]>([]);
+  const [modeOptions, setModeOptions] = useState<string[]>([...MODES]);
   const [mode, setMode] = useState<string>(MODES[0]);
   const [skillArea, setSkillArea] = useState<string>("");
   const [sessionId, setSessionId] = useState<string>("");
@@ -29,13 +34,21 @@ export function App() {
   const [quizQuestion, setQuizQuestion] = useState<QuizQuestionResponse | null>(null);
   const [quizFeedback, setQuizFeedback] = useState<QuizAnswerResponse | null>(null);
   const [weakAreaCounts, setWeakAreaCounts] = useState<Record<string, number>>({});
+  const [bootstrapMessage, setBootstrapMessage] = useState<string>("Preparing session setup options...");
+  const [bootstrapUsage, setBootstrapUsage] = useState<TokenUsage | undefined>(undefined);
+  const [usageLog, setUsageLog] = useState<TokenUsage[]>([]);
   const [error, setError] = useState<string>("");
 
   useEffect(() => {
-    getSkillsOutline()
+    bootstrapSession()
       .then((result) => {
-        setAreas(result.areas);
-        setSkillArea(result.areas[0]?.name ?? "");
+        setBootstrapMessage(result.message);
+        setAreaOptions(result.areaOptions);
+        setModeOptions(result.modeOptions);
+        setMode((currentMode) => (result.modeOptions.includes(currentMode) ? currentMode : (result.modeOptions[0] ?? MODES[0])));
+        setSkillArea(result.areaOptions[0] ?? "");
+        setBootstrapUsage(result.usage);
+        setUsageLog(result.usage ? [result.usage] : []);
       })
       .catch((err: Error) => setError(err.message));
   }, []);
@@ -47,6 +60,18 @@ export function App() {
     return sorted[0]?.[0];
   }, [weakAreaCounts]);
 
+  const tokenTotals = useMemo(() => {
+    return usageLog.reduce(
+      (total, usage) => {
+        total.promptTokens += usage.promptTokens;
+        total.completionTokens += usage.completionTokens;
+        total.totalTokens += usage.totalTokens;
+        return total;
+      },
+      { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
+    );
+  }, [usageLog]);
+
   async function onStartSession() {
     try {
       setError("");
@@ -56,6 +81,7 @@ export function App() {
       setQuizQuestion(null);
       setQuizFeedback(null);
       setWeakAreaCounts({});
+      setUsageLog(bootstrapUsage ? [bootstrapUsage] : []);
     } catch (err) {
       setError((err as Error).message);
     }
@@ -68,6 +94,9 @@ export function App() {
       setError("");
       const response = await sendChat(sessionId, chatInput);
       setChatLog((prev) => [...prev, response]);
+      if (response.usage) {
+        setUsageLog((prev) => [...prev, response.usage!]);
+      }
       setChatInput("");
 
       const weakAreas = response.meta?.weakAreasUpdate ?? [];
@@ -93,6 +122,9 @@ export function App() {
       setQuizFeedback(null);
       const response = await getNextQuestion(sessionId);
       setQuizQuestion(response);
+      if (response.usage) {
+        setUsageLog((prev) => [...prev, response.usage!]);
+      }
     } catch (err) {
       setError((err as Error).message);
     }
@@ -104,6 +136,9 @@ export function App() {
       setError("");
       const response = await submitAnswer(sessionId, quizQuestion.questionId, choice);
       setQuizFeedback(response);
+      if (response.usage) {
+        setUsageLog((prev) => [...prev, response.usage!]);
+      }
     } catch (err) {
       setError((err as Error).message);
     }
@@ -114,10 +149,13 @@ export function App() {
       <h1>AI-102 Study Coach</h1>
       <section className="panel">
         <h2>Session Setup</h2>
+        <p className="hint">{bootstrapMessage}</p>
+        {bootstrapUsage && <p className="token-usage">{formatUsage(bootstrapUsage)}</p>}
+
         <div className="row">
           <label>Mode</label>
           <select value={mode} onChange={(e) => setMode(e.target.value)}>
-            {MODES.map((item) => (
+            {modeOptions.map((item) => (
               <option key={item} value={item}>
                 {item}
               </option>
@@ -127,9 +165,9 @@ export function App() {
         <div className="row">
           <label>Skill Outline Area</label>
           <select value={skillArea} onChange={(e) => setSkillArea(e.target.value)}>
-            {areas.map((area) => (
-              <option key={area.name} value={area.name}>
-                {area.name} ({area.weightPercent})
+            {areaOptions.map((area) => (
+              <option key={area} value={area}>
+                {area}
               </option>
             ))}
           </select>
@@ -138,6 +176,13 @@ export function App() {
           Start Session
         </button>
         {sessionId && <p>Session: {sessionId}</p>}
+        {sessionId && (
+          <div className="token-total-row" role="status" aria-live="polite">
+            <p className="meta-chip">PromptTokens: {tokenTotals.promptTokens}</p>
+            <p className="meta-chip">CompletionTokens: {tokenTotals.completionTokens}</p>
+            <p className="meta-chip">TotalTokens: {tokenTotals.totalTokens}</p>
+          </div>
+        )}
       </section>
 
       <section className="panel">
@@ -155,6 +200,7 @@ export function App() {
           {chatLog.map((entry, index) => (
             <li key={`${entry.answer}-${index}`} className="chat-entry">
               <p>{entry.answer}</p>
+              {entry.usage && <p className="token-usage">{formatUsage(entry.usage)}</p>}
               {entry.meta?.mcpVerified && <p className="verified">Verified from Learn MCP</p>}
               {entry.refused && <p className="warning">{entry.refusalReason}</p>}
 
@@ -191,6 +237,7 @@ export function App() {
         {quizQuestion && (
           <div>
             <p>{quizQuestion.question}</p>
+            {quizQuestion.usage && <p className="token-usage">{formatUsage(quizQuestion.usage)}</p>}
             <div className="choices">
               {(quizQuestion.choices ?? []).map((choice, index) => {
                 const labeledChoice = withChoiceLabel(choice, index);
@@ -220,6 +267,7 @@ export function App() {
             <p>{quizFeedback.correct ? "Correct" : "Incorrect"}</p>
             <p>{quizFeedback.explanation}</p>
             <p>{quizFeedback.memoryRule}</p>
+            {quizFeedback.usage && <p className="token-usage">{formatUsage(quizFeedback.usage)}</p>}
             <ul className="citation-list">
               {quizFeedback.citations.map((citation) => (
                 <li key={`${citation.url}-${citation.retrievedAt}`}>
