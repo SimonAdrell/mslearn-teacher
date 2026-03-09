@@ -24,11 +24,10 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
 
     private const string ContractInstructions =
         "You are an AI-102 Study Coach. Use only Microsoft Learn MCP content and do not guess. " +
-        "Return concise learner-facing content in plain text, then append a fenced ```coach_meta block with strict JSON. " +
-        "The JSON must include response_type, purpose, mcp_verified, and optional quiz/onboarding structures. " +
-        "For teach/review/cram/quiz_question/quiz_feedback include skill_outline_area, must_know, exam_traps, and citations[{title,url,retrieved_at}] with at least one learn.microsoft.com citation using YYYY-MM-DD. " +
-        "For onboarding_options include onboarding.prompt, onboarding.area_options[], onboarding.mode_options[] using valid modes only. " +
-        "Use AI-102 (not A1-102).";
+        "Return structured output only and no markdown outside required formats. " +
+        "For teach/review/cram/quiz_question/quiz_feedback return exactly one JSON object with coach_text, response_type, purpose, skill_outline_area, must_know, exam_traps, citations[{title,url,retrieved_at}], mcp_verified, optional weak_areas_update, and optional quiz object. " +
+        "For onboarding_options, return response_type=onboarding_options with onboarding.prompt, onboarding.area_options[], and onboarding.mode_options[] using valid modes. " +
+        "Use AI-102 (not A1-102). For substantive responses, mcp_verified must be true and include at least one learn.microsoft.com citation with retrieved_at in YYYY-MM-DD.";
 
     private static readonly IReadOnlyList<string> DefaultAreaOptions =
     [
@@ -292,7 +291,7 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
     private static string BuildChatPrompt(string skillArea, string learnerMessage)
     {
         return
-            "Task: Respond in AI-102 coaching mode with concise learner-facing content and a required coach_meta block.\n" +
+            "Task: Respond in AI-102 coaching mode. Return exactly one JSON object and put concise learner-facing prose in coach_text.\n" +
             $"Skill area focus: {skillArea}.\n" +
             $"Learner message: {learnerMessage}";
     }
@@ -301,7 +300,7 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
     {
         return
             "Task: Generate one short AI-102 scenario-based multiple-choice question.\n" +
-            "Return response_type=quiz_question and include quiz.question and quiz.options with A, B, and C keys only.\n" +
+            "Return exactly one JSON object only. Set response_type=quiz_question, put concise learner-facing prose in coach_text, and include quiz.question and quiz.options with A, B, and C keys only.\n" +
             $"Skill area focus: {skillArea}.";
     }
 
@@ -309,7 +308,7 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
     {
         return
             "Task: Evaluate the learner's answer to the latest quiz question in this conversation.\n" +
-            "Return response_type=quiz_feedback and include quiz.correct_option, quiz.explanation, and quiz.memory_rule.\n" +
+            "Return exactly one JSON object only. Set response_type=quiz_feedback, put concise learner-facing prose in coach_text, and include quiz.correct_option, quiz.explanation, and quiz.memory_rule.\n" +
             $"Skill area focus: {skillArea}.\n" +
             $"Learner answer: {learnerAnswer}";
     }
@@ -369,5 +368,6 @@ public sealed class FoundryOptions
     public string AgentVersion { get; set; } = "";
     public bool UseMockResponses { get; set; } = true;
 }
+
 
 

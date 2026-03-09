@@ -20,26 +20,57 @@ internal static class CoachResponseParser
         {
             return CoachParseResult.Invalid("Foundry response did not include content.");
         }
-
-        var coachMetaMatch = CoachMetaBlockRegex.Match(rawOutput);
-        if (!coachMetaMatch.Success)
-        {
-            return CoachParseResult.Invalid("Foundry response missing required coach_meta block.");
-        }
+        var trimmed = rawOutput.Trim();
+        var isJsonEnvelope = trimmed.StartsWith("{", StringComparison.Ordinal) && trimmed.EndsWith("}", StringComparison.Ordinal);
 
         CoachMetaPayload? payload;
-        try
-        {
-            payload = JsonSerializer.Deserialize<CoachMetaPayload>(coachMetaMatch.Groups[1].Value, JsonOptions);
-        }
-        catch (JsonException)
-        {
-            return CoachParseResult.Invalid("Foundry response coach_meta block is not valid JSON.");
-        }
+        string coachText;
 
-        if (payload is null)
+        if (isJsonEnvelope)
         {
-            return CoachParseResult.Invalid("Foundry response coach_meta block is empty.");
+            try
+            {
+                payload = JsonSerializer.Deserialize<CoachMetaPayload>(trimmed, JsonOptions);
+            }
+            catch (JsonException)
+            {
+                return CoachParseResult.Invalid("Foundry response must be a single valid JSON object.");
+            }
+
+            if (payload is null)
+            {
+                return CoachParseResult.Invalid("Foundry response JSON object is empty.");
+            }
+
+            coachText = payload.CoachText?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(coachText))
+            {
+                return CoachParseResult.Invalid("Foundry response JSON coach_text is required.");
+            }
+        }
+        else
+        {
+            var coachMetaMatch = CoachMetaBlockRegex.Match(rawOutput);
+            if (!coachMetaMatch.Success)
+            {
+                return CoachParseResult.Invalid("Foundry response must include either a JSON object or a coach_meta block.");
+            }
+
+            try
+            {
+                payload = JsonSerializer.Deserialize<CoachMetaPayload>(coachMetaMatch.Groups[1].Value, JsonOptions);
+            }
+            catch (JsonException)
+            {
+                return CoachParseResult.Invalid("Foundry response coach_meta block is not valid JSON.");
+            }
+
+            if (payload is null)
+            {
+                return CoachParseResult.Invalid("Foundry response coach_meta block is empty.");
+            }
+
+            coachText = RemoveMetaBlock(rawOutput, coachMetaMatch);
         }
 
         var responseType = payload.ResponseType?.Trim().ToLowerInvariant();
@@ -47,8 +78,6 @@ internal static class CoachResponseParser
         {
             return CoachParseResult.Invalid("Foundry response coach_meta.response_type is required.");
         }
-
-        var coachText = RemoveMetaBlock(rawOutput, coachMetaMatch);
 
         if (string.Equals(responseType, "onboarding_options", StringComparison.Ordinal))
         {
@@ -332,6 +361,9 @@ internal sealed record CoachOnboardingResult(CoachOnboardingMeta? Onboarding, bo
 
 internal sealed class CoachMetaPayload
 {
+    [JsonPropertyName("coach_text")]
+    public string? CoachText { get; init; }
+
     [JsonPropertyName("response_type")]
     public string? ResponseType { get; init; }
 
@@ -404,3 +436,10 @@ internal sealed class CoachOnboardingPayload
     [JsonPropertyName("mode_options")]
     public IReadOnlyList<string>? ModeOptions { get; init; }
 }
+
+
+
+
+
+
+
