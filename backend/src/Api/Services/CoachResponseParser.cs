@@ -20,26 +20,57 @@ internal static class CoachResponseParser
         {
             return CoachParseResult.Invalid("Foundry response did not include content.");
         }
-
-        var coachMetaMatch = CoachMetaBlockRegex.Match(rawOutput);
-        if (!coachMetaMatch.Success)
-        {
-            return CoachParseResult.Invalid("Foundry response missing required coach_meta block.");
-        }
+        var trimmed = rawOutput.Trim();
+        var isJsonEnvelope = trimmed.StartsWith("{", StringComparison.Ordinal) && trimmed.EndsWith("}", StringComparison.Ordinal);
 
         CoachMetaPayload? payload;
-        try
-        {
-            payload = JsonSerializer.Deserialize<CoachMetaPayload>(coachMetaMatch.Groups[1].Value, JsonOptions);
-        }
-        catch (JsonException)
-        {
-            return CoachParseResult.Invalid("Foundry response coach_meta block is not valid JSON.");
-        }
+        string coachText;
 
-        if (payload is null)
+        if (isJsonEnvelope)
         {
-            return CoachParseResult.Invalid("Foundry response coach_meta block is empty.");
+            try
+            {
+                payload = JsonSerializer.Deserialize<CoachMetaPayload>(trimmed, JsonOptions);
+            }
+            catch (JsonException)
+            {
+                return CoachParseResult.Invalid("Foundry response must be a single valid JSON object.");
+            }
+
+            if (payload is null)
+            {
+                return CoachParseResult.Invalid("Foundry response JSON object is empty.");
+            }
+
+            coachText = payload.CoachText?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(coachText))
+            {
+                return CoachParseResult.Invalid("Foundry response JSON coach_text is required.");
+            }
+        }
+        else
+        {
+            var coachMetaMatch = CoachMetaBlockRegex.Match(rawOutput);
+            if (!coachMetaMatch.Success)
+            {
+                return CoachParseResult.Invalid("Foundry response must include either a JSON object or a coach_meta block.");
+            }
+
+            try
+            {
+                payload = JsonSerializer.Deserialize<CoachMetaPayload>(coachMetaMatch.Groups[1].Value, JsonOptions);
+            }
+            catch (JsonException)
+            {
+                return CoachParseResult.Invalid("Foundry response coach_meta block is not valid JSON.");
+            }
+
+            if (payload is null)
+            {
+                return CoachParseResult.Invalid("Foundry response coach_meta block is empty.");
+            }
+
+            coachText = RemoveMetaBlock(rawOutput, coachMetaMatch);
         }
 
         var responseType = payload.ResponseType?.Trim().ToLowerInvariant();
@@ -48,7 +79,24 @@ internal static class CoachResponseParser
             return CoachParseResult.Invalid("Foundry response coach_meta.response_type is required.");
         }
 
-        var coachText = RemoveMetaBlock(rawOutput, coachMetaMatch);
+        if (string.Equals(responseType, "onboarding_options", StringComparison.Ordinal))
+        {
+            var onboarding = ParseOnboarding(payload.Onboarding);
+            if (!onboarding.IsValid)
+            {
+                return CoachParseResult.Invalid(onboarding.Error!);
+            }
+
+            return new CoachParseResult(
+                coachText,
+                [],
+                null,
+                null,
+                onboarding.Onboarding,
+                responseType,
+                null);
+        }
+
         var citationsResult = ParseAndValidateCitations(payload.Citations);
         if (!citationsResult.IsValid)
         {
@@ -96,6 +144,7 @@ internal static class CoachResponseParser
             citationsResult.Citations,
             chatMeta,
             quizResult.Quiz,
+            null,
             responseType,
             null);
     }
@@ -155,6 +204,46 @@ internal static class CoachResponseParser
         }
 
         return new CoachCitationsResult(parsed, true, null);
+    }
+
+    private static CoachOnboardingResult ParseOnboarding(CoachOnboardingPayload? onboarding)
+    {
+        if (onboarding is null)
+        {
+            return CoachOnboardingResult.Invalid("Foundry response coach_meta.onboarding is required when response_type=onboarding_options.");
+        }
+
+        if (string.IsNullOrWhiteSpace(onboarding.Prompt))
+        {
+            return CoachOnboardingResult.Invalid("Foundry response coach_meta.onboarding.prompt is required.");
+        }
+
+        var areaOptions = NormalizeStringList(onboarding.AreaOptions);
+        if (areaOptions.Count == 0)
+        {
+            return CoachOnboardingResult.Invalid("Foundry response coach_meta.onboarding.area_options must include at least one option.");
+        }
+
+        var modeOptions = NormalizeStringList(onboarding.ModeOptions);
+        if (modeOptions.Count == 0)
+        {
+            return CoachOnboardingResult.Invalid("Foundry response coach_meta.onboarding.mode_options must include at least one option.");
+        }
+
+        var unsupportedModes = modeOptions
+            .Where(mode => !StudyModes.All.Contains(mode, StringComparer.OrdinalIgnoreCase))
+            .ToArray();
+
+        if (unsupportedModes.Length > 0)
+        {
+            return CoachOnboardingResult.Invalid("Foundry response coach_meta.onboarding.mode_options must use supported study modes.");
+        }
+
+        return CoachOnboardingResult.Valid(
+            new CoachOnboardingMeta(
+                onboarding.Prompt.Trim(),
+                areaOptions,
+                modeOptions));
     }
 
     private static bool IsLearnHost(string host)
@@ -229,13 +318,14 @@ internal sealed record CoachParseResult(
     IReadOnlyList<Citation> Citations,
     ChatMeta? ChatMeta,
     CoachQuizMeta? Quiz,
+    CoachOnboardingMeta? Onboarding,
     string ResponseType,
     string? Error)
 {
     public bool IsValid => string.IsNullOrWhiteSpace(Error);
 
     public static CoachParseResult Invalid(string error) =>
-        new(string.Empty, [], null, null, string.Empty, error);
+        new(string.Empty, [], null, null, null, string.Empty, error);
 }
 
 internal sealed record CoachQuizMeta(
@@ -244,6 +334,11 @@ internal sealed record CoachQuizMeta(
     string? CorrectOption,
     string? Explanation,
     string? MemoryRule);
+
+internal sealed record CoachOnboardingMeta(
+    string Prompt,
+    IReadOnlyList<string> AreaOptions,
+    IReadOnlyList<string> ModeOptions);
 
 internal sealed record CoachCitationsResult(IReadOnlyList<Citation> Citations, bool IsValid, string? Error)
 {
@@ -257,8 +352,18 @@ internal sealed record CoachQuizResult(CoachQuizMeta? Quiz, bool IsValid, string
     public static CoachQuizResult Invalid(string error) => new(null, false, error);
 }
 
+internal sealed record CoachOnboardingResult(CoachOnboardingMeta? Onboarding, bool IsValid, string? Error)
+{
+    public static CoachOnboardingResult Valid(CoachOnboardingMeta onboarding) => new(onboarding, true, null);
+
+    public static CoachOnboardingResult Invalid(string error) => new(null, false, error);
+}
+
 internal sealed class CoachMetaPayload
 {
+    [JsonPropertyName("coach_text")]
+    public string? CoachText { get; init; }
+
     [JsonPropertyName("response_type")]
     public string? ResponseType { get; init; }
 
@@ -279,6 +384,9 @@ internal sealed class CoachMetaPayload
 
     [JsonPropertyName("quiz")]
     public CoachQuizPayload? Quiz { get; init; }
+
+    [JsonPropertyName("onboarding")]
+    public CoachOnboardingPayload? Onboarding { get; init; }
 
     [JsonPropertyName("weak_areas_update")]
     public IReadOnlyList<string>? WeakAreasUpdate { get; init; }
@@ -316,3 +424,22 @@ internal sealed class CoachQuizPayload
     [JsonPropertyName("memory_rule")]
     public string? MemoryRule { get; init; }
 }
+
+internal sealed class CoachOnboardingPayload
+{
+    [JsonPropertyName("prompt")]
+    public string? Prompt { get; init; }
+
+    [JsonPropertyName("area_options")]
+    public IReadOnlyList<string>? AreaOptions { get; init; }
+
+    [JsonPropertyName("mode_options")]
+    public IReadOnlyList<string>? ModeOptions { get; init; }
+}
+
+
+
+
+
+
+
