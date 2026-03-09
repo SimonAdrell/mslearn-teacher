@@ -30,11 +30,6 @@ describe("App", () => {
           name: "Implement natural language processing solutions",
           weightPercent: "30-35%",
           includes: ["Analyze text"]
-        },
-        {
-          name: "Implement computer vision solutions",
-          weightPercent: "15-20%",
-          includes: ["Analyze images"]
         }
       ]
     });
@@ -60,25 +55,7 @@ describe("App", () => {
     });
   });
 
-  it("starts with area prompt in chat and no session setup controls", async () => {
-    vi.mocked(api.getNextQuestion).mockResolvedValue({
-      questionId: "q1",
-      question: "Question 1",
-      choices: ["Option one", "Option two", "Option three"],
-      citations: []
-    });
-
-    render(<App />);
-
-    expect(screen.queryByText("Session Setup")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Start Session" })).not.toBeInTheDocument();
-
-    await screen.findByText("Let's start your AI-102 session. Pick a Skill Outline Area.");
-    expect(screen.getByRole("button", { name: /Implement natural language processing solutions/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Implement computer vision solutions/ })).toBeInTheDocument();
-  });
-
-  it("selects area then mode, starts session automatically, and loads first question", async () => {
+  it("uses option-only quiz chat and starts flow after session start", async () => {
     vi.mocked(api.getNextQuestion).mockResolvedValue({
       questionId: "q1",
       question: "Question 1",
@@ -94,21 +71,64 @@ describe("App", () => {
 
     render(<App />);
 
-    const areaButton = await screen.findByRole("button", { name: /Implement natural language processing solutions/ });
-    fireEvent.click(areaButton);
+    expect(screen.queryByPlaceholderText("Ask an AI-102 question...")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "A) Option one" })).not.toBeInTheDocument();
 
-    await screen.findByText("Great. Choose your study mode.");
-    fireEvent.click(screen.getByRole("button", { name: "Learn" }));
+    const startButton = screen.getByRole("button", { name: "Start Session" });
+    await waitFor(() => expect(startButton).not.toBeDisabled());
+    fireEvent.click(startButton);
 
-    await waitFor(() => {
-      expect(api.startSession).toHaveBeenCalledWith("Learn", "Implement natural language processing solutions");
-    });
-
-    await screen.findByText("Question 1");
-    expect(screen.getByRole("button", { name: "A) Option one" })).toBeInTheDocument();
+    await screen.findByRole("button", { name: "A) Option one" });
+    expect(api.getNextQuestion).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps quiz flow with answer feedback, next question, citations, and verification", async () => {
+  it("appends user choice, feedback, and auto-loads next question", async () => {
+    vi.mocked(api.getNextQuestion)
+      .mockResolvedValueOnce({
+        questionId: "q1",
+        question: "Question 1",
+        choices: ["Option one", "Option two", "Option three"],
+        citations: [
+          {
+            title: "What is Azure AI Language?",
+            url: "https://learn.microsoft.com/en-us/azure/ai-services/language-service/overview",
+            retrievedAt: "2026-03-06"
+          }
+        ]
+      })
+      .mockResolvedValueOnce({
+        questionId: "q2",
+        question: "Question 2",
+        choices: ["Next one", "Next two", "Next three"],
+        citations: [
+          {
+            title: "Language service overview",
+            url: "https://learn.microsoft.com/en-us/azure/ai-services/language-service/overview",
+            retrievedAt: "2026-03-06"
+          }
+        ]
+      });
+
+    render(<App />);
+
+    const startButton = screen.getByRole("button", { name: "Start Session" });
+    await waitFor(() => expect(startButton).not.toBeDisabled());
+    fireEvent.click(startButton);
+
+    const optionButton = await screen.findByRole("button", { name: "A) Option one" });
+    fireEvent.click(optionButton);
+
+    await screen.findByText("A) Option one");
+    await screen.findByText("Correct");
+    await screen.findByText("Because");
+    await screen.findByText("Rule");
+    await screen.findByText("Question 2");
+
+    expect(api.submitAnswer).toHaveBeenCalledWith("session-1", "q1", "A) Option one");
+    expect(api.getNextQuestion).toHaveBeenCalledTimes(2);
+  });
+
+  it("renders citations and verification labels in assistant messages", async () => {
     vi.mocked(api.getNextQuestion)
       .mockResolvedValueOnce({
         questionId: "q1",
@@ -137,24 +157,15 @@ describe("App", () => {
 
     render(<App />);
 
-    const areaButton = await screen.findByRole("button", { name: /Implement natural language processing solutions/ });
-    fireEvent.click(areaButton);
-    await screen.findByText("Great. Choose your study mode.");
-    fireEvent.click(screen.getByRole("button", { name: "Learn" }));
+    const startButton = screen.getByRole("button", { name: "Start Session" });
+    await waitFor(() => expect(startButton).not.toBeDisabled());
+    fireEvent.click(startButton);
 
-    const optionButton = await screen.findByRole("button", { name: "A) Option one" });
-    fireEvent.click(optionButton);
+    await screen.findByRole("button", { name: "A) Option one" });
+    fireEvent.click(screen.getByRole("button", { name: "A) Option one" }));
 
-    await screen.findByText("Correct");
-    await screen.findByText("Because");
-    await screen.findByText("Rule");
-    await screen.findByText("Question 2");
-    expect(screen.getAllByText("Verified from Learn MCP").length).toBeGreaterThan(0);
-
-    expect(api.submitAnswer).toHaveBeenCalledWith("session-1", "q1", "A) Option one");
-    expect(api.getNextQuestion).toHaveBeenCalledTimes(2);
+    await screen.findByText("Verified from Learn MCP");
     expect(screen.getAllByRole("link", { name: /2026-03-06/ }).length).toBeGreaterThan(0);
     expect(screen.getByRole("link", { name: /2026-03-07/ })).toBeInTheDocument();
   });
 });
-

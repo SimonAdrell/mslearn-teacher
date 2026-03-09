@@ -25,6 +25,13 @@ body {
   padding: 16px;
 }
 
+.row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  align-items: center;
+}
+
 input,
 select,
 button {
@@ -44,7 +51,7 @@ button:disabled {
 }
 
 .chat-panel {
-  min-height: 520px;
+  min-height: 420px;
 }
 
 .message-list,
@@ -101,7 +108,6 @@ button:disabled {
 .hint {
   color: #1d4ed8;
   font-weight: 600;
-  margin: 0 0 8px;
 }
 
 .result-correct {
@@ -143,6 +149,11 @@ button:disabled {
 @media (max-width: 640px) {
   .layout {
     padding: 12px;
+  }
+
+  .row {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .message-bubble {

@@ -4,27 +4,6 @@ import type { Citation, QuizAnswerResponse, QuizQuestionResponse, SkillArea } fr
 
 const MODES = ["Learn", "Quiz", "Review mistakes", "Rapid cram"] as const;
 
-type OnboardingPhase = "loading_areas" | "awaiting_area" | "awaiting_mode" | "starting_session" | "session_active";
-
-type ConversationEntry = {
-  id: string;
-  role: "assistant" | "user";
-  kind: "info" | "question" | "feedback" | "selection" | "area_prompt" | "mode_prompt";
-  text: string;
-  citations?: Citation[];
-  verified?: boolean;
-  warning?: string;
-  correct?: boolean;
-  memoryRule?: string;
-  questionId?: string;
-  areaOptions?: string[];
-  modeOptions?: string[];
-};
-
-function createId() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
 function formatCitation(citation: Citation) {
   return `${citation.title} (${citation.retrievedAt})`;
 }
@@ -40,53 +19,43 @@ function withChoiceLabel(choice: string, index: number) {
   return `${label}) ${choice}`;
 }
 
+type ConversationEntry = {
+  id: string;
+  role: "assistant" | "user";
+  kind: "info" | "question" | "feedback" | "selection";
+  text: string;
+  citations?: Citation[];
+  verified?: boolean;
+  warning?: string;
+  correct?: boolean;
+  memoryRule?: string;
+  questionId?: string;
+};
+
+function createId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export function App() {
-  const [sessionId, setSessionId] = useState<string>("");
   const [areas, setAreas] = useState<SkillArea[]>([]);
-  const [selectedArea, setSelectedArea] = useState<string>("");
-  const [selectedMode, setSelectedMode] = useState<string>("");
-  const [onboardingPhase, setOnboardingPhase] = useState<OnboardingPhase>("loading_areas");
+  const [mode, setMode] = useState<string>(MODES[0]);
+  const [skillArea, setSkillArea] = useState<string>("");
+  const [sessionId, setSessionId] = useState<string>("");
   const [conversation, setConversation] = useState<ConversationEntry[]>([]);
   const [activeQuestion, setActiveQuestion] = useState<QuizQuestionResponse | null>(null);
   const [isAnswering, setIsAnswering] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
 
   useEffect(() => {
-    async function initializeOnboarding() {
-      try {
-        setError("");
-        const result = await getSkillsOutline();
+    getSkillsOutline()
+      .then((result) => {
         setAreas(result.areas);
-
-        if (result.areas.length === 0) {
-          setConversation([
-            {
-              id: createId(),
-              role: "assistant",
-              kind: "info",
-              text: "I could not find any skill outline areas right now. Please try again shortly."
-            }
-          ]);
-          return;
-        }
-
-        setConversation([
-          {
-            id: createId(),
-            role: "assistant",
-            kind: "area_prompt",
-            text: "Let's start your AI-102 session. Pick a Skill Outline Area.",
-            areaOptions: result.areas.map((area) => `${area.name} (${area.weightPercent})`)
-          }
-        ]);
-        setOnboardingPhase("awaiting_area");
-      } catch (err) {
-        setError((err as Error).message);
-      }
-    }
-
-    void initializeOnboarding();
+        setSkillArea(result.areas[0]?.name ?? "");
+      })
+      .catch((err: Error) => setError(err.message));
   }, []);
+
+  const canStart = mode.length > 0 && skillArea.length > 0;
 
   async function loadNextQuestion(currentSessionId: string) {
     const question = await getNextQuestion(currentSessionId);
@@ -106,81 +75,31 @@ export function App() {
         questionId: question.questionId
       }
     ]);
-
     setActiveQuestion(hasChoices ? question : null);
   }
 
-  function getAreaName(option: string) {
-    const match = areas.find((area) => option.startsWith(`${area.name} (`));
-    return match?.name ?? option;
-  }
-
-  async function onSelectArea(option: string) {
-    if (onboardingPhase !== "awaiting_area") return;
-
-    const areaName = getAreaName(option);
-    setSelectedArea(areaName);
-    setOnboardingPhase("awaiting_mode");
-
-    setConversation((prev) => [
-      ...prev,
-      {
-        id: createId(),
-        role: "user",
-        kind: "selection",
-        text: areaName
-      },
-      {
-        id: createId(),
-        role: "assistant",
-        kind: "mode_prompt",
-        text: "Great. Choose your study mode.",
-        modeOptions: [...MODES]
-      }
-    ]);
-  }
-
-  async function onSelectMode(mode: string) {
-    if (onboardingPhase !== "awaiting_mode" || !selectedArea) return;
-
-    setSelectedMode(mode);
-    setOnboardingPhase("starting_session");
-
-    setConversation((prev) => [
-      ...prev,
-      {
-        id: createId(),
-        role: "user",
-        kind: "selection",
-        text: mode
-      }
-    ]);
-
+  async function onStartSession() {
     try {
       setError("");
-      const session = await startSession(mode, selectedArea);
-      setSessionId(session.sessionId);
-
-      setConversation((prev) => [
-        ...prev,
+      const response = await startSession(mode, skillArea);
+      setSessionId(response.sessionId);
+      setConversation([
         {
           id: createId(),
           role: "assistant",
           kind: "info",
-          text: session.welcomeMessage
+          text: response.welcomeMessage
         }
       ]);
-
-      setOnboardingPhase("session_active");
-      await loadNextQuestion(session.sessionId);
+      setActiveQuestion(null);
+      await loadNextQuestion(response.sessionId);
     } catch (err) {
       setError((err as Error).message);
-      setOnboardingPhase("awaiting_mode");
     }
   }
 
   async function onAnswer(choice: string) {
-    if (!sessionId || !activeQuestion || onboardingPhase !== "session_active" || isAnswering) return;
+    if (!sessionId || !activeQuestion || isAnswering) return;
 
     try {
       setIsAnswering(true);
@@ -220,11 +139,37 @@ export function App() {
   return (
     <main className="layout">
       <h1>AI-102 Study Coach</h1>
+      <section className="panel">
+        <h2>Session Setup</h2>
+        <div className="row">
+          <label>Mode</label>
+          <select value={mode} onChange={(e) => setMode(e.target.value)}>
+            {MODES.map((item) => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="row">
+          <label>Skill Outline Area</label>
+          <select value={skillArea} onChange={(e) => setSkillArea(e.target.value)}>
+            {areas.map((area) => (
+              <option key={area.name} value={area.name}>
+                {area.name} ({area.weightPercent})
+              </option>
+            ))}
+          </select>
+        </div>
+        <button disabled={!canStart} onClick={onStartSession}>
+          Start Session
+        </button>
+        {sessionId && <p>Session: {sessionId}</p>}
+      </section>
 
       <section className="panel chat-panel">
         <h2>Quiz Chat</h2>
-        {selectedArea && <p className="hint">Area: {selectedArea}</p>}
-        {selectedMode && <p className="hint">Mode: {selectedMode}</p>}
+        {!sessionId && <p className="hint">Start a session to begin the chat-style quiz.</p>}
 
         <ul className="message-list">
           {conversation.map((entry) => (
@@ -250,27 +195,7 @@ export function App() {
                   </ul>
                 )}
 
-                {entry.kind === "area_prompt" && onboardingPhase === "awaiting_area" && (
-                  <div className="choices">
-                    {(entry.areaOptions ?? []).map((option) => (
-                      <button key={option} onClick={() => onSelectArea(option)}>
-                        {option}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {entry.kind === "mode_prompt" && onboardingPhase === "awaiting_mode" && (
-                  <div className="choices">
-                    {(entry.modeOptions ?? []).map((option) => (
-                      <button key={option} onClick={() => onSelectMode(option)}>
-                        {option}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {entry.kind === "question" && activeQuestion?.questionId === entry.questionId && onboardingPhase === "session_active" && (
+                {entry.kind === "question" && activeQuestion?.questionId === entry.questionId && (
                   <div className="choices">
                     {(activeQuestion.choices ?? []).map((choice, index) => {
                       const labeledChoice = withChoiceLabel(choice, index);
@@ -287,11 +212,10 @@ export function App() {
           ))}
         </ul>
 
-        {(onboardingPhase === "loading_areas" || onboardingPhase === "starting_session" || isAnswering) && <p>Thinking...</p>}
+        {isAnswering && <p>Thinking...</p>}
       </section>
 
       {error && <p className="error">{error}</p>}
     </main>
   );
 }
-
