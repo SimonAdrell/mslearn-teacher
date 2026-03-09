@@ -1,7 +1,9 @@
 :root {
   font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-  color: #102a43;
-  background: linear-gradient(180deg, #f0f4f8 0%, #d9e2ec 100%);
+  color: #172b4d;
+  background:
+    radial-gradient(circle at top right, #dbeafe 0%, transparent 45%),
+    linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
 }
 
 body {
@@ -9,7 +11,7 @@ body {
 }
 
 .layout {
-  max-width: 1000px;
+  max-width: 980px;
   margin: 0 auto;
   padding: 24px;
   display: grid;
@@ -18,43 +20,104 @@ body {
 
 .panel {
   background: #ffffff;
-  border: 1px solid #bcccdc;
-  border-radius: 12px;
+  border: 1px solid #c7d2fe;
+  border-radius: 14px;
   padding: 16px;
-}
-
-.row {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
-  align-items: center;
 }
 
 input,
 select,
 button {
-  padding: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid #a5b4fc;
+}
+
+button {
+  background: #f8fafc;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.chat-panel {
+  min-height: 520px;
+}
+
+.message-list,
+.citation-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.message-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.message-row {
+  display: flex;
+}
+
+.message-row.assistant {
+  justify-content: flex-start;
+}
+
+.message-row.user {
+  justify-content: flex-end;
+}
+
+.message-bubble {
+  max-width: min(760px, 92%);
+  border-radius: 16px;
+  padding: 12px;
+  border: 1px solid #dbeafe;
+  background: #f8fafc;
+}
+
+.message-row.user .message-bubble {
+  background: #dcfce7;
+  border-color: #86efac;
 }
 
 .choices {
+  margin-top: 10px;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.chat-list,
-.citation-list {
-  margin: 0;
-  padding-left: 18px;
-}
-
-.chat-entry {
-  margin-bottom: 12px;
+.choices button {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  font-weight: 600;
 }
 
 .hint {
   color: #1d4ed8;
   font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.result-correct {
+  color: #166534;
+  font-weight: 700;
+  margin: 0 0 6px;
+}
+
+.result-incorrect {
+  color: #9f1239;
+  font-weight: 700;
+  margin: 0 0 6px;
+}
+
+.memory-rule {
+  font-style: italic;
 }
 
 .verified {
@@ -66,29 +129,23 @@ button {
   color: #9f1239;
 }
 
+.citation-list {
+  margin-top: 8px;
+  display: grid;
+  gap: 4px;
+}
+
 .error {
   color: #991b1b;
   font-weight: 600;
 }
 
-.token-usage {
-  color: #0f4c81;
-  font-weight: 600;
-  margin-top: 6px;
-}
+@media (max-width: 640px) {
+  .layout {
+    padding: 12px;
+  }
 
-.token-total-row {
-  margin-top: 10px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.meta-chip {
-  margin: 0;
-  border-radius: 999px;
-  padding: 4px 10px;
-  background: #e6f0fa;
-  color: #184a73;
-  font-weight: 700;
+  .message-bubble {
+    max-width: 100%;
+  }
 }

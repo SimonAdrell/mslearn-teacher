@@ -1,8 +1,29 @@
-import { useEffect, useMemo, useState } from "react";
-import { bootstrapSession, getNextQuestion, sendChat, startSession, submitAnswer } from "./api";
-import type { ChatResponse, Citation, QuizAnswerResponse, QuizQuestionResponse, TokenUsage } from "./types";
+import { useEffect, useState } from "react";
+import { getNextQuestion, getSkillsOutline, startSession, submitAnswer } from "./api";
+import type { Citation, QuizAnswerResponse, QuizQuestionResponse, SkillArea } from "./types";
 
 const MODES = ["Learn", "Quiz", "Review mistakes", "Rapid cram"] as const;
+
+type OnboardingPhase = "loading_areas" | "awaiting_area" | "awaiting_mode" | "starting_session" | "session_active";
+
+type ConversationEntry = {
+  id: string;
+  role: "assistant" | "user";
+  kind: "info" | "question" | "feedback" | "selection" | "area_prompt" | "mode_prompt";
+  text: string;
+  citations?: Citation[];
+  verified?: boolean;
+  warning?: string;
+  correct?: boolean;
+  memoryRule?: string;
+  questionId?: string;
+  areaOptions?: string[];
+  modeOptions?: string[];
+};
+
+function createId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 function formatCitation(citation: Citation) {
   return `${citation.title} (${citation.retrievedAt})`;
@@ -19,269 +40,258 @@ function withChoiceLabel(choice: string, index: number) {
   return `${label}) ${choice}`;
 }
 
-function formatUsage(usage: TokenUsage) {
-  return `PromptTokens: ${usage.promptTokens} | CompletionTokens: ${usage.completionTokens} | TotalTokens: ${usage.totalTokens}`;
-}
-
 export function App() {
-  const [areaOptions, setAreaOptions] = useState<string[]>([]);
-  const [modeOptions, setModeOptions] = useState<string[]>([...MODES]);
-  const [mode, setMode] = useState<string>(MODES[0]);
-  const [skillArea, setSkillArea] = useState<string>("");
   const [sessionId, setSessionId] = useState<string>("");
-  const [chatInput, setChatInput] = useState<string>("");
-  const [chatLog, setChatLog] = useState<ChatResponse[]>([]);
-  const [quizQuestion, setQuizQuestion] = useState<QuizQuestionResponse | null>(null);
-  const [quizFeedback, setQuizFeedback] = useState<QuizAnswerResponse | null>(null);
-  const [weakAreaCounts, setWeakAreaCounts] = useState<Record<string, number>>({});
-  const [bootstrapMessage, setBootstrapMessage] = useState<string>("Preparing session setup options...");
-  const [bootstrapUsage, setBootstrapUsage] = useState<TokenUsage | undefined>(undefined);
-  const [usageLog, setUsageLog] = useState<TokenUsage[]>([]);
+  const [areas, setAreas] = useState<SkillArea[]>([]);
+  const [selectedArea, setSelectedArea] = useState<string>("");
+  const [selectedMode, setSelectedMode] = useState<string>("");
+  const [onboardingPhase, setOnboardingPhase] = useState<OnboardingPhase>("loading_areas");
+  const [conversation, setConversation] = useState<ConversationEntry[]>([]);
+  const [activeQuestion, setActiveQuestion] = useState<QuizQuestionResponse | null>(null);
+  const [isAnswering, setIsAnswering] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
 
   useEffect(() => {
-    bootstrapSession()
-      .then((result) => {
-        setBootstrapMessage(result.message);
-        setAreaOptions(result.areaOptions);
-        setModeOptions(result.modeOptions);
-        setMode((currentMode) => (result.modeOptions.includes(currentMode) ? currentMode : (result.modeOptions[0] ?? MODES[0])));
-        setSkillArea(result.areaOptions[0] ?? "");
-        setBootstrapUsage(result.usage);
-        setUsageLog(result.usage ? [result.usage] : []);
-      })
-      .catch((err: Error) => setError(err.message));
+    async function initializeOnboarding() {
+      try {
+        setError("");
+        const result = await getSkillsOutline();
+        setAreas(result.areas);
+
+        if (result.areas.length === 0) {
+          setConversation([
+            {
+              id: createId(),
+              role: "assistant",
+              kind: "info",
+              text: "I could not find any skill outline areas right now. Please try again shortly."
+            }
+          ]);
+          return;
+        }
+
+        setConversation([
+          {
+            id: createId(),
+            role: "assistant",
+            kind: "area_prompt",
+            text: "Let's start your AI-102 session. Pick a Skill Outline Area.",
+            areaOptions: result.areas.map((area) => `${area.name} (${area.weightPercent})`)
+          }
+        ]);
+        setOnboardingPhase("awaiting_area");
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    }
+
+    void initializeOnboarding();
   }, []);
 
-  const canStart = useMemo(() => mode.length > 0 && skillArea.length > 0, [mode, skillArea]);
+  async function loadNextQuestion(currentSessionId: string) {
+    const question = await getNextQuestion(currentSessionId);
+    const hasCitations = (question.citations?.length ?? 0) > 0;
+    const hasChoices = (question.choices?.length ?? 0) > 0;
 
-  const prioritizedWeakArea = useMemo(() => {
-    const sorted = Object.entries(weakAreaCounts).sort((a, b) => b[1] - a[1]);
-    return sorted[0]?.[0];
-  }, [weakAreaCounts]);
+    setConversation((prev) => [
+      ...prev,
+      {
+        id: createId(),
+        role: "assistant",
+        kind: "question",
+        text: question.question,
+        citations: question.citations,
+        verified: hasCitations,
+        warning: hasCitations ? undefined : "I can't answer this from verified Microsoft Learn MCP sources right now.",
+        questionId: question.questionId
+      }
+    ]);
 
-  const tokenTotals = useMemo(() => {
-    return usageLog.reduce(
-      (total, usage) => {
-        total.promptTokens += usage.promptTokens;
-        total.completionTokens += usage.completionTokens;
-        total.totalTokens += usage.totalTokens;
-        return total;
+    setActiveQuestion(hasChoices ? question : null);
+  }
+
+  function getAreaName(option: string) {
+    const match = areas.find((area) => option.startsWith(`${area.name} (`));
+    return match?.name ?? option;
+  }
+
+  async function onSelectArea(option: string) {
+    if (onboardingPhase !== "awaiting_area") return;
+
+    const areaName = getAreaName(option);
+    setSelectedArea(areaName);
+    setOnboardingPhase("awaiting_mode");
+
+    setConversation((prev) => [
+      ...prev,
+      {
+        id: createId(),
+        role: "user",
+        kind: "selection",
+        text: areaName
       },
-      { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
-    );
-  }, [usageLog]);
-
-  async function onStartSession() {
-    try {
-      setError("");
-      const response = await startSession(mode, skillArea);
-      setSessionId(response.sessionId);
-      setChatLog([]);
-      setQuizQuestion(null);
-      setQuizFeedback(null);
-      setWeakAreaCounts({});
-      setUsageLog(bootstrapUsage ? [bootstrapUsage] : []);
-    } catch (err) {
-      setError((err as Error).message);
-    }
+      {
+        id: createId(),
+        role: "assistant",
+        kind: "mode_prompt",
+        text: "Great. Choose your study mode.",
+        modeOptions: [...MODES]
+      }
+    ]);
   }
 
-  async function onSendChat() {
-    if (!sessionId || !chatInput.trim()) return;
+  async function onSelectMode(mode: string) {
+    if (onboardingPhase !== "awaiting_mode" || !selectedArea) return;
+
+    setSelectedMode(mode);
+    setOnboardingPhase("starting_session");
+
+    setConversation((prev) => [
+      ...prev,
+      {
+        id: createId(),
+        role: "user",
+        kind: "selection",
+        text: mode
+      }
+    ]);
 
     try {
       setError("");
-      const response = await sendChat(sessionId, chatInput);
-      setChatLog((prev) => [...prev, response]);
-      if (response.usage) {
-        setUsageLog((prev) => [...prev, response.usage!]);
-      }
-      setChatInput("");
+      const session = await startSession(mode, selectedArea);
+      setSessionId(session.sessionId);
 
-      const weakAreas = response.meta?.weakAreasUpdate ?? [];
-      if (weakAreas.length > 0) {
-        setWeakAreaCounts((prev) => {
-          const next = { ...prev };
-          weakAreas.forEach((area) => {
-            next[area] = (next[area] ?? 0) + 1;
-          });
-          return next;
-        });
-      }
+      setConversation((prev) => [
+        ...prev,
+        {
+          id: createId(),
+          role: "assistant",
+          kind: "info",
+          text: session.welcomeMessage
+        }
+      ]);
+
+      setOnboardingPhase("session_active");
+      await loadNextQuestion(session.sessionId);
     } catch (err) {
       setError((err as Error).message);
-    }
-  }
-
-  async function onNextQuiz() {
-    if (!sessionId) return;
-
-    try {
-      setError("");
-      setQuizFeedback(null);
-      const response = await getNextQuestion(sessionId);
-      setQuizQuestion(response);
-      if (response.usage) {
-        setUsageLog((prev) => [...prev, response.usage!]);
-      }
-    } catch (err) {
-      setError((err as Error).message);
+      setOnboardingPhase("awaiting_mode");
     }
   }
 
   async function onAnswer(choice: string) {
-    if (!sessionId || !quizQuestion) return;
+    if (!sessionId || !activeQuestion || onboardingPhase !== "session_active" || isAnswering) return;
+
     try {
+      setIsAnswering(true);
       setError("");
-      const response = await submitAnswer(sessionId, quizQuestion.questionId, choice);
-      setQuizFeedback(response);
-      if (response.usage) {
-        setUsageLog((prev) => [...prev, response.usage!]);
-      }
+      const feedback: QuizAnswerResponse = await submitAnswer(sessionId, activeQuestion.questionId, choice);
+      const hasCitations = feedback.citations.length > 0;
+
+      setConversation((prev) => [
+        ...prev,
+        {
+          id: createId(),
+          role: "user",
+          kind: "selection",
+          text: choice
+        },
+        {
+          id: createId(),
+          role: "assistant",
+          kind: "feedback",
+          text: feedback.explanation,
+          citations: feedback.citations,
+          verified: hasCitations,
+          warning: hasCitations ? undefined : "I can't answer this from verified Microsoft Learn MCP sources right now.",
+          correct: feedback.correct,
+          memoryRule: feedback.memoryRule
+        }
+      ]);
+
+      await loadNextQuestion(sessionId);
     } catch (err) {
       setError((err as Error).message);
+    } finally {
+      setIsAnswering(false);
     }
   }
 
   return (
     <main className="layout">
       <h1>AI-102 Study Coach</h1>
-      <section className="panel">
-        <h2>Session Setup</h2>
-        <p className="hint">{bootstrapMessage}</p>
-        {bootstrapUsage && <p className="token-usage">{formatUsage(bootstrapUsage)}</p>}
 
-        <div className="row">
-          <label>Mode</label>
-          <select value={mode} onChange={(e) => setMode(e.target.value)}>
-            {modeOptions.map((item) => (
-              <option key={item} value={item}>
-                {item}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="row">
-          <label>Skill Outline Area</label>
-          <select value={skillArea} onChange={(e) => setSkillArea(e.target.value)}>
-            {areaOptions.map((area) => (
-              <option key={area} value={area}>
-                {area}
-              </option>
-            ))}
-          </select>
-        </div>
-        <button disabled={!canStart} onClick={onStartSession}>
-          Start Session
-        </button>
-        {sessionId && <p>Session: {sessionId}</p>}
-        {sessionId && (
-          <div className="token-total-row" role="status" aria-live="polite">
-            <p className="meta-chip">PromptTokens: {tokenTotals.promptTokens}</p>
-            <p className="meta-chip">CompletionTokens: {tokenTotals.completionTokens}</p>
-            <p className="meta-chip">TotalTokens: {tokenTotals.totalTokens}</p>
-          </div>
-        )}
-      </section>
+      <section className="panel chat-panel">
+        <h2>Quiz Chat</h2>
+        {selectedArea && <p className="hint">Area: {selectedArea}</p>}
+        {selectedMode && <p className="hint">Mode: {selectedMode}</p>}
 
-      <section className="panel">
-        <h2>Chat</h2>
-        <div className="row">
-          <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Ask an AI-102 question..." />
-          <button disabled={!sessionId} onClick={onSendChat}>
-            Send
-          </button>
-        </div>
+        <ul className="message-list">
+          {conversation.map((entry) => (
+            <li key={entry.id} className={`message-row ${entry.role === "user" ? "user" : "assistant"}`}>
+              <article className="message-bubble">
+                {entry.kind === "feedback" && (
+                  <p className={entry.correct ? "result-correct" : "result-incorrect"}>{entry.correct ? "Correct" : "Incorrect"}</p>
+                )}
+                <p>{entry.text}</p>
+                {entry.memoryRule && <p className="memory-rule">{entry.memoryRule}</p>}
+                {entry.verified && <p className="verified">Verified from Learn MCP</p>}
+                {entry.warning && <p className="warning">{entry.warning}</p>}
 
-        {prioritizedWeakArea && <p className="hint">Prioritized next topic: {prioritizedWeakArea}</p>}
+                {(entry.citations?.length ?? 0) > 0 && (
+                  <ul className="citation-list">
+                    {entry.citations!.map((citation) => (
+                      <li key={`${citation.url}-${citation.retrievedAt}`}>
+                        <a href={citation.url} target="_blank" rel="noreferrer">
+                          {formatCitation(citation)}
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                )}
 
-        <ul className="chat-list">
-          {chatLog.map((entry, index) => (
-            <li key={`${entry.answer}-${index}`} className="chat-entry">
-              <p>{entry.answer}</p>
-              {entry.usage && <p className="token-usage">{formatUsage(entry.usage)}</p>}
-              {entry.meta?.mcpVerified && <p className="verified">Verified from Learn MCP</p>}
-              {entry.refused && <p className="warning">{entry.refusalReason}</p>}
+                {entry.kind === "area_prompt" && onboardingPhase === "awaiting_area" && (
+                  <div className="choices">
+                    {(entry.areaOptions ?? []).map((option) => (
+                      <button key={option} onClick={() => onSelectArea(option)}>
+                        {option}
+                      </button>
+                    ))}
+                  </div>
+                )}
 
-              {entry.meta && (
-                <details>
-                  <summary>Exam Focus</summary>
-                  <p>Skill area: {entry.meta.skillOutlineArea}</p>
-                  {entry.meta.mustKnow.length > 0 && <p>Must-know: {entry.meta.mustKnow.join("; ")}</p>}
-                  {entry.meta.examTraps.length > 0 && <p>Exam traps: {entry.meta.examTraps.join("; ")}</p>}
-                </details>
-              )}
+                {entry.kind === "mode_prompt" && onboardingPhase === "awaiting_mode" && (
+                  <div className="choices">
+                    {(entry.modeOptions ?? []).map((option) => (
+                      <button key={option} onClick={() => onSelectMode(option)}>
+                        {option}
+                      </button>
+                    ))}
+                  </div>
+                )}
 
-              {entry.citations.length > 0 && (
-                <ul className="citation-list">
-                  {entry.citations.map((citation) => (
-                    <li key={`${citation.url}-${citation.retrievedAt}`}>
-                      <a href={citation.url} target="_blank" rel="noreferrer">
-                        {formatCitation(citation)}
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-              )}
+                {entry.kind === "question" && activeQuestion?.questionId === entry.questionId && onboardingPhase === "session_active" && (
+                  <div className="choices">
+                    {(activeQuestion.choices ?? []).map((choice, index) => {
+                      const labeledChoice = withChoiceLabel(choice, index);
+                      return (
+                        <button key={labeledChoice} disabled={isAnswering} onClick={() => onAnswer(labeledChoice)}>
+                          {labeledChoice}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </article>
             </li>
           ))}
         </ul>
-      </section>
 
-      <section className="panel">
-        <h2>Quiz</h2>
-        <button disabled={!sessionId} onClick={onNextQuiz}>
-          Next Question
-        </button>
-        {quizQuestion && (
-          <div>
-            <p>{quizQuestion.question}</p>
-            {quizQuestion.usage && <p className="token-usage">{formatUsage(quizQuestion.usage)}</p>}
-            <div className="choices">
-              {(quizQuestion.choices ?? []).map((choice, index) => {
-                const labeledChoice = withChoiceLabel(choice, index);
-                return (
-                  <button key={labeledChoice} onClick={() => onAnswer(labeledChoice)}>
-                    {labeledChoice}
-                  </button>
-                );
-              })}
-            </div>
-
-            {(quizQuestion.citations?.length ?? 0) > 0 && (
-              <ul className="citation-list">
-                {quizQuestion.citations!.map((citation) => (
-                  <li key={`${citation.url}-${citation.retrievedAt}`}>
-                    <a href={citation.url} target="_blank" rel="noreferrer">
-                      {formatCitation(citation)}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
-        {quizFeedback && (
-          <div>
-            <p>{quizFeedback.correct ? "Correct" : "Incorrect"}</p>
-            <p>{quizFeedback.explanation}</p>
-            <p>{quizFeedback.memoryRule}</p>
-            {quizFeedback.usage && <p className="token-usage">{formatUsage(quizFeedback.usage)}</p>}
-            <ul className="citation-list">
-              {quizFeedback.citations.map((citation) => (
-                <li key={`${citation.url}-${citation.retrievedAt}`}>
-                  <a href={citation.url} target="_blank" rel="noreferrer">
-                    {formatCitation(citation)}
-                  </a>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+        {(onboardingPhase === "loading_areas" || onboardingPhase === "starting_session" || isAnswering) && <p>Thinking...</p>}
       </section>
 
       {error && <p className="error">{error}</p>}
     </main>
   );
 }
+
