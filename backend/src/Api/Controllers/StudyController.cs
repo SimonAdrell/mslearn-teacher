@@ -48,6 +48,21 @@ public sealed class StudyController : ControllerBase
             $"Session started in {session.Mode} mode for {session.SkillArea}."));
     }
 
+    [HttpPost("session/bootstrap")]
+    public async Task<ActionResult<BootstrapSessionResponse>> BootstrapSession(CancellationToken cancellationToken)
+    {
+        var userId = GetCurrentUserId();
+        var session = _sessionStore.StartSession("Learn", "onboarding-pending", userId);
+        var onboarding = await _coachClient.GetOnboardingOptionsAsync(session.SessionId, cancellationToken);
+
+        return Ok(new BootstrapSessionResponse(
+            session.SessionId,
+            onboarding.Prompt,
+            onboarding.AreaOptions,
+            onboarding.ModeOptions,
+            onboarding.Usage));
+    }
+
     [HttpPost("chat")]
     public async Task<ActionResult<ChatResponse>> Chat([FromBody] ChatRequest request, CancellationToken cancellationToken)
     {
@@ -64,10 +79,11 @@ public sealed class StudyController : ControllerBase
                 [],
                 true,
                 chatResult.RefusalReason ?? "Missing or invalid Learn MCP citations.",
-                null));
+                null,
+                chatResult.Usage));
         }
 
-        return Ok(new ChatResponse(chatResult.Answer, chatResult.Citations, false, null, chatResult.Meta));
+        return Ok(new ChatResponse(chatResult.Answer, chatResult.Citations, false, null, chatResult.Meta, chatResult.Usage));
     }
 
     [HttpPost("quiz/next")]
@@ -81,7 +97,7 @@ public sealed class StudyController : ControllerBase
         var question = await _coachClient.GetNextQuizQuestionAsync(request.SessionId, session.SkillArea, cancellationToken);
         if ((question.Citations?.Count ?? 0) == 0)
         {
-            return Ok(new QuizQuestionResponse(Guid.NewGuid(), LearnRefusalMessage, null, []));
+            return Ok(new QuizQuestionResponse(Guid.NewGuid(), LearnRefusalMessage, null, [], question.Usage));
         }
 
         return Ok(question);
@@ -108,7 +124,8 @@ public sealed class StudyController : ControllerBase
                 false,
                 LearnRefusalMessage,
                 "Always verify from Learn MCP.",
-                []));
+                [],
+                feedback.Usage));
         }
 
         return Ok(feedback);

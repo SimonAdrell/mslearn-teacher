@@ -40,6 +40,63 @@ Purpose: Drill NLP service selection.
     }
 
     [Fact]
+    public void Parse_WithOnboardingOptions_ReturnsOnboardingVariant()
+    {
+        const string output = """
+Let's start your AI-102 session.
+
+```coach_meta
+{
+  "response_type": "onboarding_options",
+  "purpose": "Provide onboarding options",
+  "mcp_verified": false,
+  "onboarding": {
+    "prompt": "Pick a skill area.",
+    "area_options": [
+      "Implement natural language processing solutions (30-35%)",
+      "Implement computer vision solutions (15-20%)"
+    ],
+    "mode_options": ["Learn", "Quiz"]
+  }
+}
+```
+""";
+
+        var result = CoachResponseParser.Parse(output);
+
+        result.IsValid.Should().BeTrue();
+        result.Onboarding.Should().NotBeNull();
+        result.Onboarding!.AreaOptions.Should().HaveCount(2);
+        result.Onboarding.ModeOptions.Should().Contain("Learn");
+    }
+
+    [Fact]
+    public void Parse_WithInvalidOnboardingMode_ReturnsInvalidResult()
+    {
+        const string output = """
+Setup options.
+
+```coach_meta
+{
+  "response_type": "onboarding_options",
+  "purpose": "Provide onboarding options",
+  "mcp_verified": false,
+  "onboarding": {
+    "prompt": "Pick.",
+    "area_options": ["Area"],
+    "mode_options": ["Bootcamp"]
+  }
+}
+```
+""";
+
+        var result = CoachResponseParser.Parse(output);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("supported study modes");
+    }
+
+    [Fact]
     public void Parse_WithoutCoachMeta_ReturnsInvalidResult()
     {
         var result = CoachResponseParser.Parse("No structured block here");

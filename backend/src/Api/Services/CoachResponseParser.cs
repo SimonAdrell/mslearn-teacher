@@ -49,6 +49,25 @@ internal static class CoachResponseParser
         }
 
         var coachText = RemoveMetaBlock(rawOutput, coachMetaMatch);
+
+        if (string.Equals(responseType, "onboarding_options", StringComparison.Ordinal))
+        {
+            var onboarding = ParseOnboarding(payload.Onboarding);
+            if (!onboarding.IsValid)
+            {
+                return CoachParseResult.Invalid(onboarding.Error!);
+            }
+
+            return new CoachParseResult(
+                coachText,
+                [],
+                null,
+                null,
+                onboarding.Onboarding,
+                responseType,
+                null);
+        }
+
         var citationsResult = ParseAndValidateCitations(payload.Citations);
         if (!citationsResult.IsValid)
         {
@@ -96,6 +115,7 @@ internal static class CoachResponseParser
             citationsResult.Citations,
             chatMeta,
             quizResult.Quiz,
+            null,
             responseType,
             null);
     }
@@ -155,6 +175,46 @@ internal static class CoachResponseParser
         }
 
         return new CoachCitationsResult(parsed, true, null);
+    }
+
+    private static CoachOnboardingResult ParseOnboarding(CoachOnboardingPayload? onboarding)
+    {
+        if (onboarding is null)
+        {
+            return CoachOnboardingResult.Invalid("Foundry response coach_meta.onboarding is required when response_type=onboarding_options.");
+        }
+
+        if (string.IsNullOrWhiteSpace(onboarding.Prompt))
+        {
+            return CoachOnboardingResult.Invalid("Foundry response coach_meta.onboarding.prompt is required.");
+        }
+
+        var areaOptions = NormalizeStringList(onboarding.AreaOptions);
+        if (areaOptions.Count == 0)
+        {
+            return CoachOnboardingResult.Invalid("Foundry response coach_meta.onboarding.area_options must include at least one option.");
+        }
+
+        var modeOptions = NormalizeStringList(onboarding.ModeOptions);
+        if (modeOptions.Count == 0)
+        {
+            return CoachOnboardingResult.Invalid("Foundry response coach_meta.onboarding.mode_options must include at least one option.");
+        }
+
+        var unsupportedModes = modeOptions
+            .Where(mode => !StudyModes.All.Contains(mode, StringComparer.OrdinalIgnoreCase))
+            .ToArray();
+
+        if (unsupportedModes.Length > 0)
+        {
+            return CoachOnboardingResult.Invalid("Foundry response coach_meta.onboarding.mode_options must use supported study modes.");
+        }
+
+        return CoachOnboardingResult.Valid(
+            new CoachOnboardingMeta(
+                onboarding.Prompt.Trim(),
+                areaOptions,
+                modeOptions));
     }
 
     private static bool IsLearnHost(string host)
@@ -229,13 +289,14 @@ internal sealed record CoachParseResult(
     IReadOnlyList<Citation> Citations,
     ChatMeta? ChatMeta,
     CoachQuizMeta? Quiz,
+    CoachOnboardingMeta? Onboarding,
     string ResponseType,
     string? Error)
 {
     public bool IsValid => string.IsNullOrWhiteSpace(Error);
 
     public static CoachParseResult Invalid(string error) =>
-        new(string.Empty, [], null, null, string.Empty, error);
+        new(string.Empty, [], null, null, null, string.Empty, error);
 }
 
 internal sealed record CoachQuizMeta(
@@ -244,6 +305,11 @@ internal sealed record CoachQuizMeta(
     string? CorrectOption,
     string? Explanation,
     string? MemoryRule);
+
+internal sealed record CoachOnboardingMeta(
+    string Prompt,
+    IReadOnlyList<string> AreaOptions,
+    IReadOnlyList<string> ModeOptions);
 
 internal sealed record CoachCitationsResult(IReadOnlyList<Citation> Citations, bool IsValid, string? Error)
 {
@@ -255,6 +321,13 @@ internal sealed record CoachQuizResult(CoachQuizMeta? Quiz, bool IsValid, string
     public static CoachQuizResult Valid(CoachQuizMeta? quiz) => new(quiz, true, null);
 
     public static CoachQuizResult Invalid(string error) => new(null, false, error);
+}
+
+internal sealed record CoachOnboardingResult(CoachOnboardingMeta? Onboarding, bool IsValid, string? Error)
+{
+    public static CoachOnboardingResult Valid(CoachOnboardingMeta onboarding) => new(onboarding, true, null);
+
+    public static CoachOnboardingResult Invalid(string error) => new(null, false, error);
 }
 
 internal sealed class CoachMetaPayload
@@ -279,6 +352,9 @@ internal sealed class CoachMetaPayload
 
     [JsonPropertyName("quiz")]
     public CoachQuizPayload? Quiz { get; init; }
+
+    [JsonPropertyName("onboarding")]
+    public CoachOnboardingPayload? Onboarding { get; init; }
 
     [JsonPropertyName("weak_areas_update")]
     public IReadOnlyList<string>? WeakAreasUpdate { get; init; }
@@ -315,4 +391,16 @@ internal sealed class CoachQuizPayload
 
     [JsonPropertyName("memory_rule")]
     public string? MemoryRule { get; init; }
+}
+
+internal sealed class CoachOnboardingPayload
+{
+    [JsonPropertyName("prompt")]
+    public string? Prompt { get; init; }
+
+    [JsonPropertyName("area_options")]
+    public IReadOnlyList<string>? AreaOptions { get; init; }
+
+    [JsonPropertyName("mode_options")]
+    public IReadOnlyList<string>? ModeOptions { get; init; }
 }
