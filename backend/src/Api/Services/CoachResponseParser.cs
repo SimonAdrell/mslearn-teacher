@@ -1,14 +1,10 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Text.RegularExpressions;
 
 namespace StudyCoach.BackendApi.Services;
 
 internal static class CoachResponseParser
 {
-    private static readonly Regex CoachMetaBlockRegex =
-        new("```coach_meta\\s*(\\{[\\s\\S]*?\\})\\s*```", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -21,34 +17,35 @@ internal static class CoachResponseParser
             return CoachParseResult.Invalid("Foundry response did not include content.");
         }
 
-        var coachMetaMatch = CoachMetaBlockRegex.Match(rawOutput);
-        if (!coachMetaMatch.Success)
-        {
-            return CoachParseResult.Invalid("Foundry response missing required coach_meta block.");
-        }
+        var trimmed = rawOutput.Trim();
 
         CoachMetaPayload? payload;
         try
         {
-            payload = JsonSerializer.Deserialize<CoachMetaPayload>(coachMetaMatch.Groups[1].Value, JsonOptions);
+            payload = JsonSerializer.Deserialize<CoachMetaPayload>(trimmed, JsonOptions);
         }
         catch (JsonException)
         {
-            return CoachParseResult.Invalid("Foundry response coach_meta block is not valid JSON.");
+            return CoachParseResult.Invalid("Foundry response must be a single JSON object.");
         }
 
         if (payload is null)
         {
-            return CoachParseResult.Invalid("Foundry response coach_meta block is empty.");
+            return CoachParseResult.Invalid("Foundry response JSON object is empty.");
+        }
+
+        var coachText = payload.CoachText?.Trim();
+        if (string.IsNullOrWhiteSpace(coachText))
+        {
+            return CoachParseResult.Invalid("Foundry response JSON coach_text is required.");
         }
 
         var responseType = payload.ResponseType?.Trim().ToLowerInvariant();
         if (string.IsNullOrWhiteSpace(responseType))
         {
-            return CoachParseResult.Invalid("Foundry response coach_meta.response_type is required.");
+            return CoachParseResult.Invalid("Foundry response JSON response_type is required.");
         }
 
-        var coachText = RemoveMetaBlock(rawOutput, coachMetaMatch);
         var citationsResult = ParseAndValidateCitations(payload.Citations);
         if (!citationsResult.IsValid)
         {
@@ -57,17 +54,17 @@ internal static class CoachResponseParser
 
         if (!string.Equals(responseType, "refusal", StringComparison.Ordinal) && payload.McpVerified is not true)
         {
-            return CoachParseResult.Invalid("Foundry response coach_meta.mcp_verified must be true for substantive responses.");
+            return CoachParseResult.Invalid("Foundry response JSON mcp_verified must be true for substantive responses.");
         }
 
         if (!string.Equals(responseType, "refusal", StringComparison.Ordinal) && citationsResult.Citations.Count == 0)
         {
-            return CoachParseResult.Invalid("Foundry response coach_meta.citations must include at least one Learn citation.");
+            return CoachParseResult.Invalid("Foundry response JSON citations must include at least one Learn citation.");
         }
 
         if (string.IsNullOrWhiteSpace(payload.SkillOutlineArea) && !string.Equals(responseType, "refusal", StringComparison.Ordinal))
         {
-            return CoachParseResult.Invalid("Foundry response coach_meta.skill_outline_area is required.");
+            return CoachParseResult.Invalid("Foundry response JSON skill_outline_area is required.");
         }
 
         var mustKnow = NormalizeStringList(payload.MustKnow);
@@ -100,17 +97,6 @@ internal static class CoachResponseParser
             null);
     }
 
-    private static string RemoveMetaBlock(string rawOutput, Match coachMetaMatch)
-    {
-        var withoutMeta = rawOutput.Remove(coachMetaMatch.Index, coachMetaMatch.Length).Trim();
-        if (withoutMeta.StartsWith("coach_text:", StringComparison.OrdinalIgnoreCase))
-        {
-            withoutMeta = withoutMeta["coach_text:".Length..].Trim();
-        }
-
-        return withoutMeta;
-    }
-
     private static CoachCitationsResult ParseAndValidateCitations(IReadOnlyList<CoachCitationPayload>? citations)
     {
         var parsed = new List<Citation>();
@@ -127,23 +113,23 @@ internal static class CoachResponseParser
                 string.IsNullOrWhiteSpace(citation.Url) ||
                 string.IsNullOrWhiteSpace(citation.RetrievedAt))
             {
-                return CoachCitationsResult.Invalid("Foundry response coach_meta.citations entries must include title, url, and retrieved_at.");
+                return CoachCitationsResult.Invalid("Foundry response JSON citations entries must include title, url, and retrieved_at.");
             }
 
             if (!Uri.TryCreate(citation.Url, UriKind.Absolute, out var parsedUrl) ||
                 (parsedUrl.Scheme != Uri.UriSchemeHttp && parsedUrl.Scheme != Uri.UriSchemeHttps))
             {
-                return CoachCitationsResult.Invalid("Foundry response coach_meta.citations includes an invalid URL.");
+                return CoachCitationsResult.Invalid("Foundry response JSON citations includes an invalid URL.");
             }
 
             if (!IsLearnHost(parsedUrl.Host))
             {
-                return CoachCitationsResult.Invalid("Foundry response coach_meta.citations must point to Microsoft Learn domains.");
+                return CoachCitationsResult.Invalid("Foundry response JSON citations must point to Microsoft Learn domains.");
             }
 
             if (!DateOnly.TryParseExact(citation.RetrievedAt, "yyyy-MM-dd", out var retrievedAt))
             {
-                return CoachCitationsResult.Invalid("Foundry response coach_meta.citations retrieved_at must use YYYY-MM-DD.");
+                return CoachCitationsResult.Invalid("Foundry response JSON citations retrieved_at must use YYYY-MM-DD.");
             }
 
             if (!seenUrls.Add(parsedUrl.ToString()))
@@ -186,12 +172,12 @@ internal static class CoachResponseParser
 
         if (string.IsNullOrWhiteSpace(quiz.Question))
         {
-            return CoachQuizResult.Invalid("Foundry response coach_meta.quiz.question is required when quiz is present.");
+            return CoachQuizResult.Invalid("Foundry response JSON quiz.question is required when quiz is present.");
         }
 
         if (quiz.Options is null)
         {
-            return CoachQuizResult.Invalid("Foundry response coach_meta.quiz.options is required when quiz is present.");
+            return CoachQuizResult.Invalid("Foundry response JSON quiz.options is required when quiz is present.");
         }
 
         var options = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -199,7 +185,7 @@ internal static class CoachResponseParser
         {
             if (!quiz.Options.TryGetValue(key, out var value) || string.IsNullOrWhiteSpace(value))
             {
-                return CoachQuizResult.Invalid("Foundry response coach_meta.quiz.options must include non-empty A, B, and C options.");
+                return CoachQuizResult.Invalid("Foundry response JSON quiz.options must include non-empty A, B, and C options.");
             }
 
             options[key] = value.Trim();
@@ -211,7 +197,7 @@ internal static class CoachResponseParser
             correctOption = quiz.CorrectOption.Trim().ToUpperInvariant();
             if (correctOption is not ("A" or "B" or "C"))
             {
-                return CoachQuizResult.Invalid("Foundry response coach_meta.quiz.correct_option must be A, B, or C when provided.");
+                return CoachQuizResult.Invalid("Foundry response JSON quiz.correct_option must be A, B, or C when provided.");
             }
         }
 
@@ -259,6 +245,9 @@ internal sealed record CoachQuizResult(CoachQuizMeta? Quiz, bool IsValid, string
 
 internal sealed class CoachMetaPayload
 {
+    [JsonPropertyName("coach_text")]
+    public string? CoachText { get; init; }
+
     [JsonPropertyName("response_type")]
     public string? ResponseType { get; init; }
 

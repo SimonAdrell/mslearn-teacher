@@ -36,7 +36,7 @@ describe("App", () => {
 
     vi.mocked(api.startSession).mockResolvedValue({
       sessionId: "session-1",
-      mode: "Learn",
+      mode: "Quiz",
       skillArea: "Implement natural language processing solutions",
       welcomeMessage: "welcome"
     });
@@ -68,6 +68,17 @@ describe("App", () => {
     });
   });
 
+  it("auto-starts in Quiz mode and loads the first question", async () => {
+    render(<App />);
+
+    await waitFor(() =>
+      expect(api.startSession).toHaveBeenCalledWith("Quiz", "Implement natural language processing solutions")
+    );
+    await waitFor(() => expect(api.getNextQuestion).toHaveBeenCalledWith("session-1"));
+
+    expect(await screen.findByRole("button", { name: "A) Option one" })).toBeInTheDocument();
+  });
+
   it("renders chat metadata, verification badge, and citation dates", async () => {
     vi.mocked(api.sendChat).mockResolvedValue({
       answer: "Use Azure AI Language for intent and entities.",
@@ -90,9 +101,6 @@ describe("App", () => {
 
     render(<App />);
 
-    const startButton = screen.getByRole("button", { name: "Start Session" });
-    await waitFor(() => expect(startButton).not.toBeDisabled());
-    fireEvent.click(startButton);
     await waitFor(() => expect(api.startSession).toHaveBeenCalledTimes(1));
 
     fireEvent.change(screen.getByPlaceholderText("Ask an AI-102 question..."), {
@@ -105,18 +113,21 @@ describe("App", () => {
 
     fireEvent.click(screen.getByText("Exam Focus"));
     expect(screen.getByText(/Skill area:/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /2026-03-06/ })).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: /2026-03-06/ }).length).toBeGreaterThan(0);
+  });
+
+  it("renders chat and quiz panels in the interaction grid", async () => {
+    const { container } = render(<App />);
+
+    await waitFor(() => expect(api.startSession).toHaveBeenCalledTimes(1));
+
+    expect(container.querySelector(".interaction-grid")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Chat" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Quiz" })).toBeInTheDocument();
   });
 
   it("labels quiz options as A/B/C", async () => {
     render(<App />);
-
-    const startButton = screen.getByRole("button", { name: "Start Session" });
-    await waitFor(() => expect(startButton).not.toBeDisabled());
-    fireEvent.click(startButton);
-    await waitFor(() => expect(api.startSession).toHaveBeenCalledTimes(1));
-
-    fireEvent.click(screen.getByRole("button", { name: "Next Question" }));
 
     await screen.findByRole("button", { name: "A) Option one" });
     expect(screen.getByRole("button", { name: "B) Option two" })).toBeInTheDocument();

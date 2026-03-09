@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getNextQuestion, getSkillsOutline, sendChat, startSession, submitAnswer } from "./api";
 import type { ChatResponse, Citation, QuizAnswerResponse, QuizQuestionResponse, SkillArea } from "./types";
 
 const MODES = ["Learn", "Quiz", "Review mistakes", "Rapid cram"] as const;
+const QUIZ_MODE = "Quiz";
 
 function formatCitation(citation: Citation) {
   return `${citation.title} (${citation.retrievedAt})`;
@@ -21,7 +22,7 @@ function withChoiceLabel(choice: string, index: number) {
 
 export function App() {
   const [areas, setAreas] = useState<SkillArea[]>([]);
-  const [mode, setMode] = useState<string>(MODES[0]);
+  const [mode, setMode] = useState<string>(QUIZ_MODE);
   const [skillArea, setSkillArea] = useState<string>("");
   const [sessionId, setSessionId] = useState<string>("");
   const [chatInput, setChatInput] = useState<string>("");
@@ -30,15 +31,7 @@ export function App() {
   const [quizFeedback, setQuizFeedback] = useState<QuizAnswerResponse | null>(null);
   const [weakAreaCounts, setWeakAreaCounts] = useState<Record<string, number>>({});
   const [error, setError] = useState<string>("");
-
-  useEffect(() => {
-    getSkillsOutline()
-      .then((result) => {
-        setAreas(result.areas);
-        setSkillArea(result.areas[0]?.name ?? "");
-      })
-      .catch((err: Error) => setError(err.message));
-  }, []);
+  const hasAutoStartedSession = useRef(false);
 
   const canStart = useMemo(() => mode.length > 0 && skillArea.length > 0, [mode, skillArea]);
 
@@ -47,15 +40,74 @@ export function App() {
     return sorted[0]?.[0];
   }, [weakAreaCounts]);
 
+  async function initializeSession(
+    sessionMode: string,
+    selectedSkillArea: string,
+    loadFirstQuestion: boolean,
+    shouldAbort: () => boolean = () => false
+  ) {
+    setError("");
+    const response = await startSession(sessionMode, selectedSkillArea);
+
+    if (shouldAbort()) {
+      return;
+    }
+
+    setSessionId(response.sessionId);
+    setChatLog([]);
+    setQuizQuestion(null);
+    setQuizFeedback(null);
+    setWeakAreaCounts({});
+
+    if (loadFirstQuestion) {
+      const question = await getNextQuestion(response.sessionId);
+      if (shouldAbort()) {
+        return;
+      }
+
+      setQuizQuestion(question);
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function bootstrap() {
+      try {
+        const result = await getSkillsOutline();
+        if (cancelled) {
+          return;
+        }
+
+        setAreas(result.areas);
+
+        const defaultArea = result.areas[0]?.name ?? "";
+        setSkillArea(defaultArea);
+
+        if (defaultArea.length === 0 || hasAutoStartedSession.current) {
+          return;
+        }
+
+        hasAutoStartedSession.current = true;
+        setMode(QUIZ_MODE);
+        await initializeSession(QUIZ_MODE, defaultArea, true, () => cancelled);
+      } catch (err) {
+        if (!cancelled) {
+          setError((err as Error).message);
+        }
+      }
+    }
+
+    bootstrap();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function onStartSession() {
     try {
-      setError("");
-      const response = await startSession(mode, skillArea);
-      setSessionId(response.sessionId);
-      setChatLog([]);
-      setQuizQuestion(null);
-      setQuizFeedback(null);
-      setWeakAreaCounts({});
+      await initializeSession(mode, skillArea, mode === QUIZ_MODE);
     } catch (err) {
       setError((err as Error).message);
     }
@@ -112,6 +164,7 @@ export function App() {
   return (
     <main className="layout">
       <h1>AI-102 Study Coach</h1>
+
       <section className="panel">
         <h2>Session Setup</h2>
         <div className="row">
@@ -140,36 +193,72 @@ export function App() {
         {sessionId && <p>Session: {sessionId}</p>}
       </section>
 
-      <section className="panel">
-        <h2>Chat</h2>
-        <div className="row">
-          <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Ask an AI-102 question..." />
-          <button disabled={!sessionId} onClick={onSendChat}>
-            Send
+      <div className="interaction-grid">
+        <section className="panel">
+          <h2>Chat</h2>
+          <div className="row">
+            <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Ask an AI-102 question..." />
+            <button disabled={!sessionId} onClick={onSendChat}>
+              Send
+            </button>
+          </div>
+
+          {prioritizedWeakArea && <p className="hint">Prioritized next topic: {prioritizedWeakArea}</p>}
+
+          <ul className="chat-list">
+            {chatLog.map((entry, index) => (
+              <li key={`${entry.answer}-${index}`} className="chat-entry">
+                <p>{entry.answer}</p>
+                {entry.meta?.mcpVerified && <p className="verified">Verified from Learn MCP</p>}
+                {entry.refused && <p className="warning">{entry.refusalReason}</p>}
+
+                {entry.meta && (
+                  <details>
+                    <summary>Exam Focus</summary>
+                    <p>Skill area: {entry.meta.skillOutlineArea}</p>
+                    {entry.meta.mustKnow.length > 0 && <p>Must-know: {entry.meta.mustKnow.join("; ")}</p>}
+                    {entry.meta.examTraps.length > 0 && <p>Exam traps: {entry.meta.examTraps.join("; ")}</p>}
+                  </details>
+                )}
+
+                {entry.citations.length > 0 && (
+                  <ul className="citation-list">
+                    {entry.citations.map((citation) => (
+                      <li key={`${citation.url}-${citation.retrievedAt}`}>
+                        <a href={citation.url} target="_blank" rel="noreferrer">
+                          {formatCitation(citation)}
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        <section className="panel">
+          <h2>Quiz</h2>
+          <button disabled={!sessionId} onClick={onNextQuiz}>
+            Next Question
           </button>
-        </div>
+          {quizQuestion && (
+            <div>
+              <p>{quizQuestion.question}</p>
+              <div className="choices">
+                {(quizQuestion.choices ?? []).map((choice, index) => {
+                  const labeledChoice = withChoiceLabel(choice, index);
+                  return (
+                    <button key={labeledChoice} onClick={() => onAnswer(labeledChoice)}>
+                      {labeledChoice}
+                    </button>
+                  );
+                })}
+              </div>
 
-        {prioritizedWeakArea && <p className="hint">Prioritized next topic: {prioritizedWeakArea}</p>}
-
-        <ul className="chat-list">
-          {chatLog.map((entry, index) => (
-            <li key={`${entry.answer}-${index}`} className="chat-entry">
-              <p>{entry.answer}</p>
-              {entry.meta?.mcpVerified && <p className="verified">Verified from Learn MCP</p>}
-              {entry.refused && <p className="warning">{entry.refusalReason}</p>}
-
-              {entry.meta && (
-                <details>
-                  <summary>Exam Focus</summary>
-                  <p>Skill area: {entry.meta.skillOutlineArea}</p>
-                  {entry.meta.mustKnow.length > 0 && <p>Must-know: {entry.meta.mustKnow.join("; ")}</p>}
-                  {entry.meta.examTraps.length > 0 && <p>Exam traps: {entry.meta.examTraps.join("; ")}</p>}
-                </details>
-              )}
-
-              {entry.citations.length > 0 && (
+              {(quizQuestion.citations?.length ?? 0) > 0 && (
                 <ul className="citation-list">
-                  {entry.citations.map((citation) => (
+                  {quizQuestion.citations!.map((citation) => (
                     <li key={`${citation.url}-${citation.retrievedAt}`}>
                       <a href={citation.url} target="_blank" rel="noreferrer">
                         {formatCitation(citation)}
@@ -178,33 +267,15 @@ export function App() {
                   ))}
                 </ul>
               )}
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      <section className="panel">
-        <h2>Quiz</h2>
-        <button disabled={!sessionId} onClick={onNextQuiz}>
-          Next Question
-        </button>
-        {quizQuestion && (
-          <div>
-            <p>{quizQuestion.question}</p>
-            <div className="choices">
-              {(quizQuestion.choices ?? []).map((choice, index) => {
-                const labeledChoice = withChoiceLabel(choice, index);
-                return (
-                  <button key={labeledChoice} onClick={() => onAnswer(labeledChoice)}>
-                    {labeledChoice}
-                  </button>
-                );
-              })}
             </div>
-
-            {(quizQuestion.citations?.length ?? 0) > 0 && (
+          )}
+          {quizFeedback && (
+            <div>
+              <p>{quizFeedback.correct ? "Correct" : "Incorrect"}</p>
+              <p>{quizFeedback.explanation}</p>
+              <p>{quizFeedback.memoryRule}</p>
               <ul className="citation-list">
-                {quizQuestion.citations!.map((citation) => (
+                {quizFeedback.citations.map((citation) => (
                   <li key={`${citation.url}-${citation.retrievedAt}`}>
                     <a href={citation.url} target="_blank" rel="noreferrer">
                       {formatCitation(citation)}
@@ -212,28 +283,13 @@ export function App() {
                   </li>
                 ))}
               </ul>
-            )}
-          </div>
-        )}
-        {quizFeedback && (
-          <div>
-            <p>{quizFeedback.correct ? "Correct" : "Incorrect"}</p>
-            <p>{quizFeedback.explanation}</p>
-            <p>{quizFeedback.memoryRule}</p>
-            <ul className="citation-list">
-              {quizFeedback.citations.map((citation) => (
-                <li key={`${citation.url}-${citation.retrievedAt}`}>
-                  <a href={citation.url} target="_blank" rel="noreferrer">
-                    {formatCitation(citation)}
-                  </a>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </section>
+            </div>
+          )}
+        </section>
+      </div>
 
       {error && <p className="error">{error}</p>}
     </main>
   );
 }
+
