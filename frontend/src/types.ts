@@ -1,19 +1,14 @@
-export type SkillArea = {
-  name: string;
-  weightPercent: string;
-  includes: string[];
-};
-
-export type SkillsOutlineResponse = {
-  areas: SkillArea[];
-  citations?: Citation[];
-  isFromCache?: boolean;
-};
-
 export type Citation = {
   title: string;
   url: string;
   retrievedAt: string;
+};
+
+export type BootstrapSessionResponse = {
+  sessionId: string;
+  message: string;
+  areaOptions: string[];
+  modeOptions: string[];
 };
 
 export type StartSessionResponse = {

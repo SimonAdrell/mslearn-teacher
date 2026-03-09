@@ -48,6 +48,42 @@ public sealed class StudyController : ControllerBase
             $"Session started in {session.Mode} mode for {session.SkillArea}."));
     }
 
+    [HttpPost("session/bootstrap")]
+    public async Task<ActionResult<BootstrapSessionResponse>> BootstrapSession(CancellationToken cancellationToken)
+    {
+        var userId = GetCurrentUserId();
+        var session = _sessionStore.StartSession("Learn", "onboarding-pending", userId);
+        var onboarding = await _coachClient.GetOnboardingOptionsAsync(session.SessionId, cancellationToken);
+
+        return Ok(new BootstrapSessionResponse(
+            session.SessionId,
+            onboarding.Prompt,
+            onboarding.AreaOptions,
+            onboarding.ModeOptions));
+    }
+
+    [HttpPost("session/configure")]
+    public ActionResult ConfigureSession([FromBody] ConfigureSessionRequest request)
+    {
+        if (!StudyModes.All.Contains(request.Mode, StringComparer.OrdinalIgnoreCase))
+        {
+            return BadRequest(new { error = "Unsupported mode." });
+        }
+
+        if (string.IsNullOrWhiteSpace(request.SkillArea))
+        {
+            return BadRequest(new { error = "Skill area is required." });
+        }
+
+        var userId = GetCurrentUserId();
+        if (!_sessionStore.TryConfigureSessionForUser(request.SessionId, request.Mode, request.SkillArea, userId, out _))
+        {
+            return NotFound(new { error = "Session not found." });
+        }
+
+        return NoContent();
+    }
+
     [HttpPost("chat")]
     public async Task<ActionResult<ChatResponse>> Chat([FromBody] ChatRequest request, CancellationToken cancellationToken)
     {

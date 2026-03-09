@@ -9,6 +9,7 @@ namespace StudyCoach.BackendApi.Services;
 
 public interface IFoundryStudyCoachClient
 {
+    Task<FoundryOnboardingResult> GetOnboardingOptionsAsync(Guid sessionId, CancellationToken cancellationToken);
     Task<FoundryChatResult> GetChatReplyAsync(Guid sessionId, string skillArea, string message, CancellationToken cancellationToken);
     Task<QuizQuestionResponse> GetNextQuizQuestionAsync(Guid sessionId, string skillArea, CancellationToken cancellationToken);
     Task<QuizAnswerResponse> GradeQuizAnswerAsync(Guid sessionId, string skillArea, Guid questionId, string answer, CancellationToken cancellationToken);
@@ -22,9 +23,14 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
 
     private const string ContractInstructions =
         "You are an AI-102 Study Coach. Use only Microsoft Learn MCP content and do not guess. " +
-        "Return concise learner-facing content in plain text, then append a fenced ```coach_meta block with strict JSON. " +
-        "The JSON must include response_type, purpose, skill_outline_area, must_know, exam_traps, citations[{title,url,retrieved_at}], mcp_verified, optional weak_areas_update, and optional quiz object. " +
-        "Use AI-102 (not A1-102). For quiz questions include options A/B/C. For substantive responses, mcp_verified must be true and include at least one learn.microsoft.com citation with retrieved_at in YYYY-MM-DD.";
+        "Return exactly one JSON object and nothing else. Do not return markdown, code fences, or prose outside JSON. " +
+        "The JSON must include response_type, purpose, coach_text, and mcp_verified. " +
+        "For teach, review, cram, quiz_question, and quiz_feedback responses also include skill_outline_area, non-empty must_know[], non-empty exam_traps[], and citations[{title,url,retrieved_at}] with at least one learn.microsoft.com citation using YYYY-MM-DD. " +
+        "For onboarding responses, use response_type=onboarding_options and include onboarding.prompt, onboarding.area_options[], onboarding.mode_options[]. " +
+        "For quiz_question include quiz.question and quiz.options with exactly A/B/C keys. " +
+        "For quiz_feedback include quiz.correct_option (A/B/C), quiz.explanation, and quiz.memory_rule. " +
+        "For refusal responses set mcp_verified=false. " +
+        "Use AI-102 (not A1-102).";
 
     private readonly FoundryOptions _options;
     private readonly ILogger<FoundryStudyCoachClient> _logger;
@@ -51,6 +57,47 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
         var projectClient = new AIProjectClient(new Uri(_options.ProjectEndpoint), new DefaultAzureCredential());
         var agentReference = ProjectsOpenAIModelFactory.AgentReference(_options.AgentName, _options.AgentVersion);
         _responsesClient = projectClient.OpenAI.GetProjectResponsesClientForAgent(agentReference);
+    }
+
+    public async Task<FoundryOnboardingResult> GetOnboardingOptionsAsync(Guid sessionId, CancellationToken cancellationToken)
+    {
+        if (_options.UseMockResponses)
+        {
+            return new FoundryOnboardingResult(
+                "Let's start your AI-102 session. Pick a Skill Outline Area.",
+                [
+                    "Implement natural language processing solutions (30-35%)",
+                    "Implement computer vision solutions (15-20%)",
+                    "Implement generative AI solutions (20-25%)"
+                ],
+                [.. StudyModes.All]);
+        }
+
+        var parseResult = await CreateAndParseResponseAsync(
+            sessionId,
+            BuildOnboardingPrompt(),
+            cancellationToken);
+
+        if (!parseResult.IsValid)
+        {
+            _logger.LogWarning("Onboarding generation parse error for session {SessionId}: {Error}", sessionId, parseResult.Error);
+            return new FoundryOnboardingResult(
+                "Let's start your AI-102 session. Pick a Skill Outline Area.",
+                ["Implement natural language processing solutions (30-35%)"],
+                [.. StudyModes.All]);
+        }
+
+        return parseResult.Response switch
+        {
+            CoachParsedOnboarding onboarding => new FoundryOnboardingResult(
+                onboarding.Prompt,
+                onboarding.AreaOptions,
+                onboarding.ModeOptions),
+            _ => new FoundryOnboardingResult(
+                "Let's start your AI-102 session. Pick a Skill Outline Area.",
+                ["Implement natural language processing solutions (30-35%)"],
+                [.. StudyModes.All])
+        };
     }
 
     public async Task<FoundryChatResult> GetChatReplyAsync(Guid sessionId, string skillArea, string message, CancellationToken cancellationToken)
@@ -88,7 +135,14 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
             return new FoundryChatResult(LearnRefusalMessage, [], null, true, parseResult.Error);
         }
 
-        return new FoundryChatResult(parseResult.CoachText, parseResult.Citations, parseResult.ChatMeta, false, null);
+        return parseResult.Response switch
+        {
+            CoachParsedTeachLike teachLike => new FoundryChatResult(teachLike.CoachText, teachLike.Citations, teachLike.Meta, false, null),
+            CoachParsedRefusal refusal => new FoundryChatResult(refusal.CoachText, refusal.Citations, null, true, null),
+            CoachParsedQuizFeedback feedback => new FoundryChatResult(feedback.CoachText, feedback.Citations, feedback.Meta, false, null),
+            CoachParsedQuizQuestion question => new FoundryChatResult(question.CoachText, question.Citations, question.Meta, false, null),
+            _ => new FoundryChatResult(LearnRefusalMessage, [], null, true, "Unexpected parser response type for chat.")
+        };
     }
 
     public async Task<QuizQuestionResponse> GetNextQuizQuestionAsync(Guid sessionId, string skillArea, CancellationToken cancellationToken)
@@ -116,14 +170,20 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
             BuildQuizPrompt(skillArea),
             cancellationToken);
 
-        if (!parseResult.IsValid || parseResult.Quiz is null)
+        if (!parseResult.IsValid)
         {
             _logger.LogWarning("Quiz generation parse error for session {SessionId}: {Error}", sessionId, parseResult.Error);
             return new QuizQuestionResponse(Guid.NewGuid(), LearnRefusalMessage, null, []);
         }
 
-        var choices = ToLabeledChoices(parseResult.Quiz.Options);
-        return new QuizQuestionResponse(Guid.NewGuid(), parseResult.Quiz.Question, choices, parseResult.Citations);
+        if (parseResult.Response is not CoachParsedQuizQuestion question)
+        {
+            _logger.LogWarning("Quiz generation parser returned unexpected response type for session {SessionId}", sessionId);
+            return new QuizQuestionResponse(Guid.NewGuid(), LearnRefusalMessage, null, []);
+        }
+
+        var choices = ToLabeledChoices(question.Quiz.Options);
+        return new QuizQuestionResponse(Guid.NewGuid(), question.Quiz.Question, choices, question.Citations);
     }
 
     public async Task<QuizAnswerResponse> GradeQuizAnswerAsync(Guid sessionId, string skillArea, Guid questionId, string answer, CancellationToken cancellationToken)
@@ -154,21 +214,27 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
             BuildQuizFeedbackPrompt(skillArea, answer),
             cancellationToken);
 
-        if (!parseResult.IsValid || parseResult.Quiz is null)
+        if (!parseResult.IsValid)
         {
             _logger.LogWarning("Quiz grading parse error for session {SessionId}: {Error}", sessionId, parseResult.Error);
             return new QuizAnswerResponse(false, LearnRefusalMessage, "Always verify from Learn MCP.", []);
         }
 
-        var isCorrect = IsCorrectAnswer(answer, parseResult.Quiz);
-        var explanation = string.IsNullOrWhiteSpace(parseResult.Quiz.Explanation)
-            ? (isCorrect ? "Correct." : "Incorrect.")
-            : parseResult.Quiz.Explanation;
-        var memoryRule = string.IsNullOrWhiteSpace(parseResult.Quiz.MemoryRule)
-            ? "Always verify from Learn MCP."
-            : parseResult.Quiz.MemoryRule;
+        if (parseResult.Response is not CoachParsedQuizFeedback feedback)
+        {
+            _logger.LogWarning("Quiz grading parser returned unexpected response type for session {SessionId}", sessionId);
+            return new QuizAnswerResponse(false, LearnRefusalMessage, "Always verify from Learn MCP.", []);
+        }
 
-        return new QuizAnswerResponse(isCorrect, explanation!, memoryRule!, parseResult.Citations);
+        var isCorrect = IsCorrectAnswer(answer, feedback.Quiz);
+        var explanation = string.IsNullOrWhiteSpace(feedback.Quiz.Explanation)
+            ? (isCorrect ? "Correct." : "Incorrect.")
+            : feedback.Quiz.Explanation;
+        var memoryRule = string.IsNullOrWhiteSpace(feedback.Quiz.MemoryRule)
+            ? "Always verify from Learn MCP."
+            : feedback.Quiz.MemoryRule;
+
+        return new QuizAnswerResponse(isCorrect, explanation!, memoryRule!, feedback.Citations);
     }
 
     private async Task<CoachParseResult> CreateAndParseResponseAsync(Guid sessionId, string message, CancellationToken cancellationToken)
@@ -197,10 +263,18 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
         return CoachResponseParser.Parse(output);
     }
 
+    private static string BuildOnboardingPrompt()
+    {
+        return
+            "Task: Provide onboarding setup options for an AI-102 study chat session.\n" +
+            "Return strict JSON only with response_type=onboarding_options, purpose, coach_text, mcp_verified, onboarding.prompt, onboarding.area_options, onboarding.mode_options.\n" +
+            "Do not ask follow-up free-text questions. Return compact option arrays only.";
+    }
+
     private static string BuildChatPrompt(string skillArea, string learnerMessage)
     {
         return
-            "Task: Respond in AI-102 coaching mode with concise learner-facing content and a required coach_meta block.\n" +
+            "Task: Respond in AI-102 coaching mode with strict JSON only.\n" +
             $"Skill area focus: {skillArea}.\n" +
             $"Learner message: {learnerMessage}";
     }
@@ -209,7 +283,7 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
     {
         return
             "Task: Generate one short AI-102 scenario-based multiple-choice question.\n" +
-            "Return response_type=quiz_question and include quiz.question and quiz.options with A, B, and C keys only.\n" +
+            "Return strict JSON only with response_type=quiz_question and include purpose, coach_text, mcp_verified, skill_outline_area, must_know, exam_traps, citations, quiz.question, and quiz.options with exactly A, B, and C keys.\n" +
             $"Skill area focus: {skillArea}.";
     }
 
@@ -217,7 +291,7 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
     {
         return
             "Task: Evaluate the learner's answer to the latest quiz question in this conversation.\n" +
-            "Return response_type=quiz_feedback and include quiz.correct_option, quiz.explanation, and quiz.memory_rule.\n" +
+            "Return strict JSON only with response_type=quiz_feedback and include purpose, coach_text, mcp_verified, skill_outline_area, must_know, exam_traps, citations, quiz.correct_option, quiz.explanation, and quiz.memory_rule.\n" +
             $"Skill area focus: {skillArea}.\n" +
             $"Learner answer: {learnerAnswer}";
     }
@@ -253,6 +327,8 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
         return normalizedAnswer.Contains(expectedText, StringComparison.OrdinalIgnoreCase);
     }
 }
+
+public record FoundryOnboardingResult(string Prompt, IReadOnlyList<string> AreaOptions, IReadOnlyList<string> ModeOptions);
 
 public record FoundryChatResult(
     string Answer,

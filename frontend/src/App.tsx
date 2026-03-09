@@ -1,8 +1,27 @@
-import { useEffect, useMemo, useState } from "react";
-import { getNextQuestion, getSkillsOutline, sendChat, startSession, submitAnswer } from "./api";
-import type { ChatResponse, Citation, QuizAnswerResponse, QuizQuestionResponse, SkillArea } from "./types";
+import { useEffect, useState } from "react";
+import { bootstrapSession, configureSession, getNextQuestion, submitAnswer } from "./api";
+import type { Citation, QuizAnswerResponse, QuizQuestionResponse } from "./types";
 
-const MODES = ["Learn", "Quiz", "Review mistakes", "Rapid cram"] as const;
+type RoutePath = "/" | "/start" | "/session";
+type OnboardingStatus = "idle" | "loading" | "awaiting_area" | "awaiting_mode" | "configuring";
+type SessionStatus = "idle" | "loading_question" | "answering";
+
+type ConversationEntry = {
+  id: string;
+  role: "assistant" | "user";
+  kind: "info" | "question" | "feedback" | "selection";
+  text: string;
+  citations?: Citation[];
+  verified?: boolean;
+  warning?: string;
+  correct?: boolean;
+  memoryRule?: string;
+  questionId?: string;
+};
+
+function createId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 function formatCitation(citation: Citation) {
   return `${citation.title} (${citation.retrievedAt})`;
@@ -19,220 +38,354 @@ function withChoiceLabel(choice: string, index: number) {
   return `${label}) ${choice}`;
 }
 
+function normalizeRoute(pathname: string): RoutePath {
+  if (pathname === "/start") {
+    return "/start";
+  }
+
+  if (pathname === "/session") {
+    return "/session";
+  }
+
+  return "/";
+}
+
 export function App() {
-  const [areas, setAreas] = useState<SkillArea[]>([]);
-  const [mode, setMode] = useState<string>(MODES[0]);
-  const [skillArea, setSkillArea] = useState<string>("");
+  const [route, setRoute] = useState<RoutePath>(() => normalizeRoute(window.location.pathname));
   const [sessionId, setSessionId] = useState<string>("");
-  const [chatInput, setChatInput] = useState<string>("");
-  const [chatLog, setChatLog] = useState<ChatResponse[]>([]);
-  const [quizQuestion, setQuizQuestion] = useState<QuizQuestionResponse | null>(null);
-  const [quizFeedback, setQuizFeedback] = useState<QuizAnswerResponse | null>(null);
-  const [weakAreaCounts, setWeakAreaCounts] = useState<Record<string, number>>({});
+  const [selectedArea, setSelectedArea] = useState<string>("");
+  const [selectedMode, setSelectedMode] = useState<string>("");
+  const [areaOptions, setAreaOptions] = useState<string[]>([]);
+  const [modeOptions, setModeOptions] = useState<string[]>([]);
+  const [onboardingMessage, setOnboardingMessage] = useState<string>("Choose your AI-102 focus area to begin.");
+  const [onboardingStatus, setOnboardingStatus] = useState<OnboardingStatus>("idle");
+  const [conversation, setConversation] = useState<ConversationEntry[]>([]);
+  const [activeQuestion, setActiveQuestion] = useState<QuizQuestionResponse | null>(null);
+  const [sessionStatus, setSessionStatus] = useState<SessionStatus>("idle");
   const [error, setError] = useState<string>("");
 
   useEffect(() => {
-    getSkillsOutline()
-      .then((result) => {
-        setAreas(result.areas);
-        setSkillArea(result.areas[0]?.name ?? "");
-      })
-      .catch((err: Error) => setError(err.message));
+    function onPopState() {
+      setRoute(normalizeRoute(window.location.pathname));
+    }
+
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+    };
   }, []);
 
-  const canStart = useMemo(() => mode.length > 0 && skillArea.length > 0, [mode, skillArea]);
-
-  const prioritizedWeakArea = useMemo(() => {
-    const sorted = Object.entries(weakAreaCounts).sort((a, b) => b[1] - a[1]);
-    return sorted[0]?.[0];
-  }, [weakAreaCounts]);
-
-  async function onStartSession() {
-    try {
-      setError("");
-      const response = await startSession(mode, skillArea);
-      setSessionId(response.sessionId);
-      setChatLog([]);
-      setQuizQuestion(null);
-      setQuizFeedback(null);
-      setWeakAreaCounts({});
-    } catch (err) {
-      setError((err as Error).message);
+  function navigate(nextRoute: RoutePath, replace = false) {
+    if (route === nextRoute) {
+      return;
     }
+
+    if (replace) {
+      window.history.replaceState(null, "", nextRoute);
+    } else {
+      window.history.pushState(null, "", nextRoute);
+    }
+
+    setRoute(nextRoute);
   }
 
-  async function onSendChat() {
-    if (!sessionId || !chatInput.trim()) return;
+  useEffect(() => {
+    if (route !== "/start" || onboardingStatus !== "idle") {
+      return;
+    }
 
-    try {
-      setError("");
-      const response = await sendChat(sessionId, chatInput);
-      setChatLog((prev) => [...prev, response]);
-      setChatInput("");
+    async function initializeOnboarding() {
+      try {
+        setError("");
+        setOnboardingStatus("loading");
+        setActiveQuestion(null);
+        setConversation([]);
+        setSelectedArea("");
+        setSelectedMode("");
 
-      const weakAreas = response.meta?.weakAreasUpdate ?? [];
-      if (weakAreas.length > 0) {
-        setWeakAreaCounts((prev) => {
-          const next = { ...prev };
-          weakAreas.forEach((area) => {
-            next[area] = (next[area] ?? 0) + 1;
-          });
-          return next;
-        });
+        const bootstrap = await bootstrapSession();
+        setSessionId(bootstrap.sessionId);
+        setAreaOptions(bootstrap.areaOptions);
+        setModeOptions(bootstrap.modeOptions);
+        setOnboardingMessage(bootstrap.message);
+        setOnboardingStatus("awaiting_area");
+      } catch (err) {
+        setError((err as Error).message);
+        setOnboardingStatus("idle");
       }
-    } catch (err) {
-      setError((err as Error).message);
+    }
+
+    void initializeOnboarding();
+  }, [route, onboardingStatus]);
+
+  useEffect(() => {
+    if (route === "/session" && (!sessionId || !selectedArea || !selectedMode)) {
+      navigate("/start", true);
+    }
+  }, [route, sessionId, selectedArea, selectedMode]);
+
+  async function loadNextQuestion(currentSessionId: string) {
+    setSessionStatus("loading_question");
+    try {
+      const question = await getNextQuestion(currentSessionId);
+      const hasCitations = (question.citations?.length ?? 0) > 0;
+      const hasChoices = (question.choices?.length ?? 0) > 0;
+
+      setConversation((prev) => [
+        ...prev,
+        {
+          id: createId(),
+          role: "assistant",
+          kind: "question",
+          text: question.question,
+          citations: question.citations,
+          verified: hasCitations,
+          warning: hasCitations ? undefined : "I can't answer this from verified Microsoft Learn MCP sources right now.",
+          questionId: question.questionId
+        }
+      ]);
+
+      setActiveQuestion(hasChoices ? question : null);
+    } finally {
+      setSessionStatus("idle");
     }
   }
 
-  async function onNextQuiz() {
-    if (!sessionId) return;
+  async function onSelectArea(option: string) {
+    if (onboardingStatus !== "awaiting_area") {
+      return;
+    }
+
+    setSelectedArea(option);
+    setOnboardingStatus("awaiting_mode");
+  }
+
+  async function onSelectMode(mode: string) {
+    if (onboardingStatus !== "awaiting_mode" || !selectedArea || !sessionId) {
+      return;
+    }
+
+    setSelectedMode(mode);
+    setOnboardingStatus("configuring");
 
     try {
       setError("");
-      setQuizFeedback(null);
-      const response = await getNextQuestion(sessionId);
-      setQuizQuestion(response);
+      await configureSession(sessionId, mode, selectedArea);
+
+      setConversation([
+        {
+          id: createId(),
+          role: "assistant",
+          kind: "info",
+          text: `Session started in ${mode} mode for ${selectedArea}.`
+        }
+      ]);
+
+      navigate("/session");
+      setOnboardingStatus("idle");
+      await loadNextQuestion(sessionId);
     } catch (err) {
       setError((err as Error).message);
+      setOnboardingStatus("awaiting_mode");
     }
   }
 
   async function onAnswer(choice: string) {
-    if (!sessionId || !quizQuestion) return;
+    if (!sessionId || !activeQuestion || route !== "/session" || sessionStatus === "answering") {
+      return;
+    }
+
     try {
+      setSessionStatus("answering");
       setError("");
-      const response = await submitAnswer(sessionId, quizQuestion.questionId, choice);
-      setQuizFeedback(response);
+      const feedback: QuizAnswerResponse = await submitAnswer(sessionId, activeQuestion.questionId, choice);
+      const hasCitations = feedback.citations.length > 0;
+
+      setConversation((prev) => [
+        ...prev,
+        {
+          id: createId(),
+          role: "user",
+          kind: "selection",
+          text: choice
+        },
+        {
+          id: createId(),
+          role: "assistant",
+          kind: "feedback",
+          text: feedback.explanation,
+          citations: feedback.citations,
+          verified: hasCitations,
+          warning: hasCitations ? undefined : "I can't answer this from verified Microsoft Learn MCP sources right now.",
+          correct: feedback.correct,
+          memoryRule: feedback.memoryRule
+        }
+      ]);
+
+      await loadNextQuestion(sessionId);
     } catch (err) {
       setError((err as Error).message);
+      setSessionStatus("idle");
     }
+  }
+
+  function renderStartPage() {
+    return (
+      <section className="panel hero-panel">
+        <p className="eyebrow">AI-102 Learning Flow</p>
+        <h1>Study with a guided start, then learn in focused quiz chat</h1>
+        <p className="lead">
+          This coach verifies answers against Microsoft Learn citations and helps you build durable memory rules while you practice.
+        </p>
+
+        <div className="step-grid" aria-label="Learning steps">
+          <article className="step-card">
+            <p className="step-number">Step 1</p>
+            <h2>Read the setup</h2>
+            <p>Understand how the flow works and what you will choose before your first question appears.</p>
+          </article>
+          <article className="step-card">
+            <p className="step-number">Step 2</p>
+            <h2>Answer start questions</h2>
+            <p>Pick your AI-102 skill area first, then select the study mode that fits your session goal.</p>
+          </article>
+          <article className="step-card">
+            <p className="step-number">Step 3</p>
+            <h2>Begin learning</h2>
+            <p>Work through questions, get instant feedback, and use verified citations for reinforcement.</p>
+          </article>
+        </div>
+
+        <button className="cta-button" onClick={() => navigate("/start")}>Start learning</button>
+      </section>
+    );
+  }
+
+  function renderOnboardingPage() {
+    const isBusy = onboardingStatus === "loading" || onboardingStatus === "configuring";
+
+    return (
+      <section className="panel onboarding-panel">
+        <p className="eyebrow">Setup</p>
+        <h1>Start questions</h1>
+        <p className="lead">{onboardingMessage}</p>
+
+        <div className="progress-row" role="status" aria-live="polite">
+          <span className={`progress-chip ${selectedArea ? "complete" : "active"}`}>1. Skill Area</span>
+          <span className={`progress-chip ${selectedMode ? "complete" : onboardingStatus === "awaiting_mode" ? "active" : ""}`}>2. Study Mode</span>
+        </div>
+
+        {isBusy && (
+          <div className="spinner-inline" aria-label="Loading setup">
+            <span className="spinner-dot" />
+            <span className="spinner-dot" />
+            <span className="spinner-dot" />
+          </div>
+        )}
+
+        {onboardingStatus === "awaiting_area" && (
+          <div className="choices" aria-label="Skill area options">
+            {areaOptions.map((option) => (
+              <button key={option} className="choice-button" onClick={() => onSelectArea(option)}>
+                {option}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {onboardingStatus === "awaiting_mode" && (
+          <>
+            <p className="selection-summary">Selected area: {selectedArea}</p>
+            <div className="choices" aria-label="Mode options">
+              {modeOptions.map((option) => (
+                <button key={option} className="choice-button" onClick={() => onSelectMode(option)}>
+                  {option}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </section>
+    );
+  }
+
+  function renderSessionPage() {
+    const showSpinner = sessionStatus === "loading_question" || sessionStatus === "answering";
+
+    return (
+      <section className="panel session-panel">
+        <header className="session-header">
+          <div>
+            <p className="eyebrow">Learning Session</p>
+            <h1>AI-102 Study Coach</h1>
+          </div>
+          <button className="ghost-button" onClick={() => navigate("/start")}>Restart setup</button>
+        </header>
+
+        <div className="meta-row">
+          <p className="meta-chip">Area: {selectedArea}</p>
+          <p className="meta-chip">Mode: {selectedMode}</p>
+        </div>
+
+        <ul className="message-list">
+          {conversation.map((entry) => (
+            <li key={entry.id} className={`message-row ${entry.role === "user" ? "user" : "assistant"}`}>
+              <article className="message-bubble">
+                {entry.kind === "feedback" && (
+                  <p className={entry.correct ? "result-correct" : "result-incorrect"}>{entry.correct ? "Correct" : "Incorrect"}</p>
+                )}
+                <p>{entry.text}</p>
+                {entry.memoryRule && <p className="memory-rule">{entry.memoryRule}</p>}
+                {entry.verified && <p className="verified">Verified from Learn MCP</p>}
+                {entry.warning && <p className="warning">{entry.warning}</p>}
+
+                {(entry.citations?.length ?? 0) > 0 && (
+                  <ul className="citation-list">
+                    {entry.citations!.map((citation) => (
+                      <li key={`${citation.url}-${citation.retrievedAt}`}>
+                        <a href={citation.url} target="_blank" rel="noreferrer">
+                          {formatCitation(citation)}
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {entry.kind === "question" && activeQuestion?.questionId === entry.questionId && route === "/session" && (
+                  <div className="choices">
+                    {(activeQuestion.choices ?? []).map((choice, index) => {
+                      const labeledChoice = withChoiceLabel(choice, index);
+                      return (
+                        <button key={labeledChoice} className="choice-button" disabled={sessionStatus === "answering"} onClick={() => onAnswer(labeledChoice)}>
+                          {labeledChoice}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </article>
+            </li>
+          ))}
+
+          {showSpinner && (
+            <li className="message-row assistant" aria-live="polite">
+              <article className="message-bubble spinner-bubble" aria-label="Waiting for response">
+                <span className="spinner-dot" />
+                <span className="spinner-dot" />
+                <span className="spinner-dot" />
+              </article>
+            </li>
+          )}
+        </ul>
+      </section>
+    );
   }
 
   return (
     <main className="layout">
-      <h1>AI-102 Study Coach</h1>
-      <section className="panel">
-        <h2>Session Setup</h2>
-        <div className="row">
-          <label>Mode</label>
-          <select value={mode} onChange={(e) => setMode(e.target.value)}>
-            {MODES.map((item) => (
-              <option key={item} value={item}>
-                {item}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="row">
-          <label>Skill Outline Area</label>
-          <select value={skillArea} onChange={(e) => setSkillArea(e.target.value)}>
-            {areas.map((area) => (
-              <option key={area.name} value={area.name}>
-                {area.name} ({area.weightPercent})
-              </option>
-            ))}
-          </select>
-        </div>
-        <button disabled={!canStart} onClick={onStartSession}>
-          Start Session
-        </button>
-        {sessionId && <p>Session: {sessionId}</p>}
-      </section>
-
-      <section className="panel">
-        <h2>Chat</h2>
-        <div className="row">
-          <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Ask an AI-102 question..." />
-          <button disabled={!sessionId} onClick={onSendChat}>
-            Send
-          </button>
-        </div>
-
-        {prioritizedWeakArea && <p className="hint">Prioritized next topic: {prioritizedWeakArea}</p>}
-
-        <ul className="chat-list">
-          {chatLog.map((entry, index) => (
-            <li key={`${entry.answer}-${index}`} className="chat-entry">
-              <p>{entry.answer}</p>
-              {entry.meta?.mcpVerified && <p className="verified">Verified from Learn MCP</p>}
-              {entry.refused && <p className="warning">{entry.refusalReason}</p>}
-
-              {entry.meta && (
-                <details>
-                  <summary>Exam Focus</summary>
-                  <p>Skill area: {entry.meta.skillOutlineArea}</p>
-                  {entry.meta.mustKnow.length > 0 && <p>Must-know: {entry.meta.mustKnow.join("; ")}</p>}
-                  {entry.meta.examTraps.length > 0 && <p>Exam traps: {entry.meta.examTraps.join("; ")}</p>}
-                </details>
-              )}
-
-              {entry.citations.length > 0 && (
-                <ul className="citation-list">
-                  {entry.citations.map((citation) => (
-                    <li key={`${citation.url}-${citation.retrievedAt}`}>
-                      <a href={citation.url} target="_blank" rel="noreferrer">
-                        {formatCitation(citation)}
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      <section className="panel">
-        <h2>Quiz</h2>
-        <button disabled={!sessionId} onClick={onNextQuiz}>
-          Next Question
-        </button>
-        {quizQuestion && (
-          <div>
-            <p>{quizQuestion.question}</p>
-            <div className="choices">
-              {(quizQuestion.choices ?? []).map((choice, index) => {
-                const labeledChoice = withChoiceLabel(choice, index);
-                return (
-                  <button key={labeledChoice} onClick={() => onAnswer(labeledChoice)}>
-                    {labeledChoice}
-                  </button>
-                );
-              })}
-            </div>
-
-            {(quizQuestion.citations?.length ?? 0) > 0 && (
-              <ul className="citation-list">
-                {quizQuestion.citations!.map((citation) => (
-                  <li key={`${citation.url}-${citation.retrievedAt}`}>
-                    <a href={citation.url} target="_blank" rel="noreferrer">
-                      {formatCitation(citation)}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
-        {quizFeedback && (
-          <div>
-            <p>{quizFeedback.correct ? "Correct" : "Incorrect"}</p>
-            <p>{quizFeedback.explanation}</p>
-            <p>{quizFeedback.memoryRule}</p>
-            <ul className="citation-list">
-              {quizFeedback.citations.map((citation) => (
-                <li key={`${citation.url}-${citation.retrievedAt}`}>
-                  <a href={citation.url} target="_blank" rel="noreferrer">
-                    {formatCitation(citation)}
-                  </a>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </section>
-
+      {route === "/" && renderStartPage()}
+      {route === "/start" && renderOnboardingPage()}
+      {route === "/session" && renderSessionPage()}
       {error && <p className="error">{error}</p>}
     </main>
   );

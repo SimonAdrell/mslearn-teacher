@@ -19,6 +19,33 @@ public class StudyEndpointsTests
     }
 
     [Fact]
+    public async Task BootstrapSession_WithAuth_ReturnsSessionAndOptions()
+    {
+        await using var factory = new StudyCoachApiFactory();
+        using var client = factory.CreateAuthenticatedClient();
+
+        var response = await client.PostAsync("/api/study/session/bootstrap", null);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<BootstrapSessionResponse>();
+        payload.Should().NotBeNull();
+        payload!.SessionId.Should().NotBeEmpty();
+        payload.AreaOptions.Should().NotBeEmpty();
+        payload.ModeOptions.Should().Contain("Learn");
+    }
+
+    [Fact]
+    public async Task BootstrapSession_WithoutAuth_ReturnsUnauthorized()
+    {
+        await using var factory = new StudyCoachApiFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsync("/api/study/session/bootstrap", null);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
     public async Task StartSession_WithAuth_ReturnsSession()
     {
         await using var factory = new StudyCoachApiFactory();
@@ -86,6 +113,12 @@ public class StudyEndpointsTests
 
     private sealed class NoCitationFoundryClient : IFoundryStudyCoachClient
     {
+        public Task<FoundryOnboardingResult> GetOnboardingOptionsAsync(Guid sessionId, CancellationToken cancellationToken) =>
+            Task.FromResult(new FoundryOnboardingResult(
+                "Pick a skill area.",
+                ["Implement natural language processing solutions (30-35%)"],
+                ["Learn", "Quiz"]));
+
         public Task<FoundryChatResult> GetChatReplyAsync(Guid sessionId, string skillArea, string message, CancellationToken cancellationToken) =>
             Task.FromResult(new FoundryChatResult("answer-without-source", [], null, true, "No citations"));
 

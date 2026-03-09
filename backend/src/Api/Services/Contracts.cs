@@ -7,6 +7,8 @@ public static class StudyModes
 
 public record StartSessionRequest(string Mode, string SkillArea);
 public record StartSessionResponse(Guid SessionId, string Mode, string SkillArea, string WelcomeMessage);
+public record BootstrapSessionResponse(Guid SessionId, string Message, IReadOnlyList<string> AreaOptions, IReadOnlyList<string> ModeOptions);
+public record ConfigureSessionRequest(Guid SessionId, string Mode, string SkillArea);
 
 public record ChatRequest(Guid SessionId, string Message);
 public record ChatResponse(
@@ -39,4 +41,5 @@ public record SkillsOutlineResponse(
     IReadOnlyList<SkillArea> Areas,
     IReadOnlyList<Citation>? Citations = null,
     bool IsFromCache = false);
+
 public record SkillArea(string Name, string WeightPercent, IReadOnlyList<string> Includes);

@@ -1,8 +1,8 @@
 import type {
+  BootstrapSessionResponse,
   ChatResponse,
   QuizAnswerResponse,
   QuizQuestionResponse,
-  SkillsOutlineResponse,
   StartSessionResponse
 } from "./types";
 
@@ -30,11 +30,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(`Request failed (${response.status})`);
   }
 
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
   return response.json() as Promise<T>;
 }
 
-export function getSkillsOutline() {
-  return request<SkillsOutlineResponse>("/api/study/skills-outline");
+export function bootstrapSession() {
+  return request<BootstrapSessionResponse>("/api/study/session/bootstrap", {
+    method: "POST"
+  });
+}
+
+export function configureSession(sessionId: string, mode: string, skillArea: string) {
+  return request<void>("/api/study/session/configure", {
+    method: "POST",
+    body: JSON.stringify({ sessionId, mode, skillArea })
+  });
 }
 
 export function startSession(mode: string, skillArea: string) {
