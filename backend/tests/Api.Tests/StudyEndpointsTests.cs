@@ -19,6 +19,23 @@ public class StudyEndpointsTests
     }
 
     [Fact]
+    public async Task BootstrapSession_WithAuth_ReturnsSessionOptionsAndUsage()
+    {
+        await using var factory = new StudyCoachApiFactory();
+        using var client = factory.CreateAuthenticatedClient();
+
+        var response = await client.PostAsync("/api/study/session/bootstrap", null);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<BootstrapSessionResponse>();
+        payload.Should().NotBeNull();
+        payload!.SessionId.Should().NotBeEmpty();
+        payload.AreaOptions.Should().NotBeEmpty();
+        payload.ModeOptions.Should().Contain("Learn");
+        payload.Usage.Should().NotBeNull();
+    }
+
+    [Fact]
     public async Task StartSession_WithAuth_ReturnsSession()
     {
         await using var factory = new StudyCoachApiFactory();
@@ -33,7 +50,7 @@ public class StudyEndpointsTests
     }
 
     [Fact]
-    public async Task Chat_WithoutCitations_ReturnsRefusalMessage()
+    public async Task Chat_WithoutCitations_ReturnsRefusalMessageAndUsage()
     {
         await using var factory = new StudyCoachApiFactory(new NoCitationFoundryClient());
         using var client = factory.CreateAuthenticatedClient();
@@ -48,10 +65,14 @@ public class StudyEndpointsTests
         payload!.Refused.Should().BeTrue();
         payload.Answer.Should().Contain("I can't answer this from verified Microsoft Learn MCP sources right now");
         payload.RefusalReason.Should().Be("No citations");
+        payload.Usage.Should().NotBeNull();
+        payload.Usage!.PromptTokens.Should().Be(12);
+        payload.Usage.CompletionTokens.Should().Be(8);
+        payload.Usage.TotalTokens.Should().Be(20);
     }
 
     [Fact]
-    public async Task QuizNext_WithoutCitations_ReturnsRefusalPrompt()
+    public async Task QuizNext_WithoutCitations_ReturnsRefusalPromptAndUsage()
     {
         await using var factory = new StudyCoachApiFactory(new NoCitationFoundryClient());
         using var client = factory.CreateAuthenticatedClient();
@@ -65,6 +86,7 @@ public class StudyEndpointsTests
         payload.Should().NotBeNull();
         payload!.Choices.Should().BeNull();
         payload.Question.Should().Contain("I can't answer this from verified Microsoft Learn MCP sources right now");
+        payload.Usage.Should().NotBeNull();
     }
 
     [Fact]
@@ -86,13 +108,22 @@ public class StudyEndpointsTests
 
     private sealed class NoCitationFoundryClient : IFoundryStudyCoachClient
     {
+        private static readonly TokenUsageDto Usage = new(12, 8, 20);
+
+        public Task<FoundryOnboardingResult> GetOnboardingOptionsAsync(Guid sessionId, CancellationToken cancellationToken) =>
+            Task.FromResult(new FoundryOnboardingResult(
+                "Pick a skill area.",
+                ["Implement natural language processing solutions (30-35%)"],
+                ["Learn", "Quiz"],
+                Usage));
+
         public Task<FoundryChatResult> GetChatReplyAsync(Guid sessionId, string skillArea, string message, CancellationToken cancellationToken) =>
-            Task.FromResult(new FoundryChatResult("answer-without-source", [], null, true, "No citations"));
+            Task.FromResult(new FoundryChatResult("answer-without-source", [], null, true, "No citations", Usage));
 
         public Task<QuizQuestionResponse> GetNextQuizQuestionAsync(Guid sessionId, string skillArea, CancellationToken cancellationToken) =>
-            Task.FromResult(new QuizQuestionResponse(Guid.NewGuid(), "q", ["A) a", "B) b", "C) c"], []));
+            Task.FromResult(new QuizQuestionResponse(Guid.NewGuid(), "q", ["A) a", "B) b", "C) c"], [], Usage));
 
         public Task<QuizAnswerResponse> GradeQuizAnswerAsync(Guid sessionId, string skillArea, Guid questionId, string answer, CancellationToken cancellationToken) =>
-            Task.FromResult(new QuizAnswerResponse(false, "e", "m", []));
+            Task.FromResult(new QuizAnswerResponse(false, "e", "m", [], Usage));
     }
 }
