@@ -23,21 +23,11 @@ body {
   padding: 16px;
 }
 
-.interaction-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-}
-
 .row {
   display: flex;
   gap: 8px;
   margin-bottom: 12px;
   align-items: center;
-}
-
-.row input {
-  flex: 1;
 }
 
 input,
@@ -81,8 +71,24 @@ button {
   font-weight: 600;
 }
 
-@media (max-width: 900px) {
-  .interaction-grid {
-    grid-template-columns: 1fr;
-  }
+.token-usage {
+  color: #0f4c81;
+  font-weight: 600;
+  margin-top: 6px;
+}
+
+.token-total-row {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.meta-chip {
+  margin: 0;
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: #e6f0fa;
+  color: #184a73;
+  font-weight: 700;
 }

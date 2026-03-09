@@ -8,7 +8,7 @@ vi.mock("./api", async () => {
 
   return {
     ...actual,
-    getSkillsOutline: vi.fn(),
+    bootstrapSession: vi.fn(),
     startSession: vi.fn(),
     sendChat: vi.fn(),
     getNextQuestion: vi.fn(),
@@ -24,27 +24,58 @@ describe("App", () => {
   beforeEach(() => {
     vi.resetAllMocks();
 
-    vi.mocked(api.getSkillsOutline).mockResolvedValue({
-      areas: [
-        {
-          name: "Implement natural language processing solutions",
-          weightPercent: "30-35%",
-          includes: ["Analyze text"]
-        }
-      ]
+    vi.mocked(api.bootstrapSession).mockResolvedValue({
+      sessionId: "bootstrap-session-1",
+      message: "Let's start your AI-102 session. Pick a skill area.",
+      areaOptions: ["Implement natural language processing solutions (30-35%)"],
+      modeOptions: ["Learn", "Quiz", "Review mistakes", "Rapid cram"],
+      usage: {
+        promptTokens: 10,
+        completionTokens: 5,
+        totalTokens: 15
+      }
     });
 
     vi.mocked(api.startSession).mockResolvedValue({
       sessionId: "session-1",
-      mode: "Quiz",
-      skillArea: "Implement natural language processing solutions",
+      mode: "Learn",
+      skillArea: "Implement natural language processing solutions (30-35%)",
       welcomeMessage: "welcome"
+    });
+
+    vi.mocked(api.sendChat).mockResolvedValue({
+      answer: "Use Azure AI Language for intent and entities.",
+      refused: false,
+      citations: [
+        {
+          title: "What is Azure AI Language?",
+          url: "https://learn.microsoft.com/en-us/azure/ai-services/language-service/overview",
+          retrievedAt: "2026-03-06"
+        }
+      ],
+      usage: {
+        promptTokens: 20,
+        completionTokens: 10,
+        totalTokens: 30
+      },
+      meta: {
+        skillOutlineArea: "Implement natural language processing solutions",
+        mustKnow: ["Use Azure AI Language for intent and entities"],
+        examTraps: ["Confusing Azure OpenAI with Azure AI Language"],
+        mcpVerified: true,
+        weakAreasUpdate: ["Implement natural language processing solutions"]
+      }
     });
 
     vi.mocked(api.getNextQuestion).mockResolvedValue({
       questionId: "q1",
       question: "Question",
       choices: ["Option one", "Option two", "Option three"],
+      usage: {
+        promptTokens: 8,
+        completionTokens: 4,
+        totalTokens: 12
+      },
       citations: [
         {
           title: "What is Azure AI Language?",
@@ -58,6 +89,11 @@ describe("App", () => {
       correct: true,
       explanation: "Because",
       memoryRule: "Rule",
+      usage: {
+        promptTokens: 6,
+        completionTokens: 3,
+        totalTokens: 9
+      },
       citations: [
         {
           title: "What is Azure AI Language?",
@@ -68,39 +104,16 @@ describe("App", () => {
     });
   });
 
-  it("auto-starts in Quiz mode and loads the first question", async () => {
+  it("shows bootstrap usage, per-response usage, and running token totals", async () => {
     render(<App />);
 
-    await waitFor(() =>
-      expect(api.startSession).toHaveBeenCalledWith("Quiz", "Implement natural language processing solutions")
-    );
-    await waitFor(() => expect(api.getNextQuestion).toHaveBeenCalledWith("session-1"));
+    await screen.findByText("Let's start your AI-102 session. Pick a skill area.");
+    expect(api.bootstrapSession).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("PromptTokens: 10 | CompletionTokens: 5 | TotalTokens: 15")).toBeInTheDocument();
 
-    expect(await screen.findByRole("button", { name: "A) Option one" })).toBeInTheDocument();
-  });
-
-  it("renders chat metadata, verification badge, and citation dates", async () => {
-    vi.mocked(api.sendChat).mockResolvedValue({
-      answer: "Use Azure AI Language for intent and entities.",
-      refused: false,
-      citations: [
-        {
-          title: "What is Azure AI Language?",
-          url: "https://learn.microsoft.com/en-us/azure/ai-services/language-service/overview",
-          retrievedAt: "2026-03-06"
-        }
-      ],
-      meta: {
-        skillOutlineArea: "Implement natural language processing solutions",
-        mustKnow: ["Use Azure AI Language for intent and entities"],
-        examTraps: ["Confusing Azure OpenAI with Azure AI Language"],
-        mcpVerified: true,
-        weakAreasUpdate: ["Implement natural language processing solutions"]
-      }
-    });
-
-    render(<App />);
-
+    const startButton = screen.getByRole("button", { name: "Start Session" });
+    await waitFor(() => expect(startButton).not.toBeDisabled());
+    fireEvent.click(startButton);
     await waitFor(() => expect(api.startSession).toHaveBeenCalledTimes(1));
 
     fireEvent.change(screen.getByPlaceholderText("Ask an AI-102 question..."), {
@@ -108,26 +121,31 @@ describe("App", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
-    await screen.findByText("Verified from Learn MCP");
-    expect(screen.getByText("Prioritized next topic: Implement natural language processing solutions")).toBeInTheDocument();
+    await screen.findByText("Use Azure AI Language for intent and entities.");
+    expect(screen.getByText("PromptTokens: 20 | CompletionTokens: 10 | TotalTokens: 30")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("Exam Focus"));
-    expect(screen.getByText(/Skill area:/)).toBeInTheDocument();
-    expect(screen.getAllByRole("link", { name: /2026-03-06/ }).length).toBeGreaterThan(0);
-  });
+    fireEvent.click(screen.getByRole("button", { name: "Next Question" }));
+    await screen.findByText("Question");
+    expect(screen.getByText("PromptTokens: 8 | CompletionTokens: 4 | TotalTokens: 12")).toBeInTheDocument();
 
-  it("renders chat and quiz panels in the interaction grid", async () => {
-    const { container } = render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "A) Option one" }));
+    await screen.findByText("Because");
+    expect(screen.getByText("PromptTokens: 6 | CompletionTokens: 3 | TotalTokens: 9")).toBeInTheDocument();
 
-    await waitFor(() => expect(api.startSession).toHaveBeenCalledTimes(1));
-
-    expect(container.querySelector(".interaction-grid")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Chat" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Quiz" })).toBeInTheDocument();
+    expect(screen.getByText("PromptTokens: 44")).toBeInTheDocument();
+    expect(screen.getByText("CompletionTokens: 22")).toBeInTheDocument();
+    expect(screen.getByText("TotalTokens: 66")).toBeInTheDocument();
   });
 
   it("labels quiz options as A/B/C", async () => {
     render(<App />);
+
+    const startButton = screen.getByRole("button", { name: "Start Session" });
+    await waitFor(() => expect(startButton).not.toBeDisabled());
+    fireEvent.click(startButton);
+    await waitFor(() => expect(api.startSession).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "Next Question" }));
 
     await screen.findByRole("button", { name: "A) Option one" });
     expect(screen.getByRole("button", { name: "B) Option two" })).toBeInTheDocument();

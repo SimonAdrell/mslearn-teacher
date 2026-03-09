@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { getNextQuestion, getSkillsOutline, sendChat, startSession, submitAnswer } from "./api";
-import type { ChatResponse, Citation, QuizAnswerResponse, QuizQuestionResponse, SkillArea } from "./types";
+import { useEffect, useMemo, useState } from "react";
+import { bootstrapSession, getNextQuestion, sendChat, startSession, submitAnswer } from "./api";
+import type { ChatResponse, Citation, QuizAnswerResponse, QuizQuestionResponse, TokenUsage } from "./types";
 
 const MODES = ["Learn", "Quiz", "Review mistakes", "Rapid cram"] as const;
-const QUIZ_MODE = "Quiz";
 
 function formatCitation(citation: Citation) {
   return `${citation.title} (${citation.retrievedAt})`;
@@ -20,9 +19,14 @@ function withChoiceLabel(choice: string, index: number) {
   return `${label}) ${choice}`;
 }
 
+function formatUsage(usage: TokenUsage) {
+  return `PromptTokens: ${usage.promptTokens} | CompletionTokens: ${usage.completionTokens} | TotalTokens: ${usage.totalTokens}`;
+}
+
 export function App() {
-  const [areas, setAreas] = useState<SkillArea[]>([]);
-  const [mode, setMode] = useState<string>(QUIZ_MODE);
+  const [areaOptions, setAreaOptions] = useState<string[]>([]);
+  const [modeOptions, setModeOptions] = useState<string[]>([...MODES]);
+  const [mode, setMode] = useState<string>(MODES[0]);
   const [skillArea, setSkillArea] = useState<string>("");
   const [sessionId, setSessionId] = useState<string>("");
   const [chatInput, setChatInput] = useState<string>("");
@@ -30,8 +34,24 @@ export function App() {
   const [quizQuestion, setQuizQuestion] = useState<QuizQuestionResponse | null>(null);
   const [quizFeedback, setQuizFeedback] = useState<QuizAnswerResponse | null>(null);
   const [weakAreaCounts, setWeakAreaCounts] = useState<Record<string, number>>({});
+  const [bootstrapMessage, setBootstrapMessage] = useState<string>("Preparing session setup options...");
+  const [bootstrapUsage, setBootstrapUsage] = useState<TokenUsage | undefined>(undefined);
+  const [usageLog, setUsageLog] = useState<TokenUsage[]>([]);
   const [error, setError] = useState<string>("");
-  const hasAutoStartedSession = useRef(false);
+
+  useEffect(() => {
+    bootstrapSession()
+      .then((result) => {
+        setBootstrapMessage(result.message);
+        setAreaOptions(result.areaOptions);
+        setModeOptions(result.modeOptions);
+        setMode((currentMode) => (result.modeOptions.includes(currentMode) ? currentMode : (result.modeOptions[0] ?? MODES[0])));
+        setSkillArea(result.areaOptions[0] ?? "");
+        setBootstrapUsage(result.usage);
+        setUsageLog(result.usage ? [result.usage] : []);
+      })
+      .catch((err: Error) => setError(err.message));
+  }, []);
 
   const canStart = useMemo(() => mode.length > 0 && skillArea.length > 0, [mode, skillArea]);
 
@@ -40,74 +60,28 @@ export function App() {
     return sorted[0]?.[0];
   }, [weakAreaCounts]);
 
-  async function initializeSession(
-    sessionMode: string,
-    selectedSkillArea: string,
-    loadFirstQuestion: boolean,
-    shouldAbort: () => boolean = () => false
-  ) {
-    setError("");
-    const response = await startSession(sessionMode, selectedSkillArea);
-
-    if (shouldAbort()) {
-      return;
-    }
-
-    setSessionId(response.sessionId);
-    setChatLog([]);
-    setQuizQuestion(null);
-    setQuizFeedback(null);
-    setWeakAreaCounts({});
-
-    if (loadFirstQuestion) {
-      const question = await getNextQuestion(response.sessionId);
-      if (shouldAbort()) {
-        return;
-      }
-
-      setQuizQuestion(question);
-    }
-  }
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function bootstrap() {
-      try {
-        const result = await getSkillsOutline();
-        if (cancelled) {
-          return;
-        }
-
-        setAreas(result.areas);
-
-        const defaultArea = result.areas[0]?.name ?? "";
-        setSkillArea(defaultArea);
-
-        if (defaultArea.length === 0 || hasAutoStartedSession.current) {
-          return;
-        }
-
-        hasAutoStartedSession.current = true;
-        setMode(QUIZ_MODE);
-        await initializeSession(QUIZ_MODE, defaultArea, true, () => cancelled);
-      } catch (err) {
-        if (!cancelled) {
-          setError((err as Error).message);
-        }
-      }
-    }
-
-    bootstrap();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const tokenTotals = useMemo(() => {
+    return usageLog.reduce(
+      (total, usage) => {
+        total.promptTokens += usage.promptTokens;
+        total.completionTokens += usage.completionTokens;
+        total.totalTokens += usage.totalTokens;
+        return total;
+      },
+      { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
+    );
+  }, [usageLog]);
 
   async function onStartSession() {
     try {
-      await initializeSession(mode, skillArea, mode === QUIZ_MODE);
+      setError("");
+      const response = await startSession(mode, skillArea);
+      setSessionId(response.sessionId);
+      setChatLog([]);
+      setQuizQuestion(null);
+      setQuizFeedback(null);
+      setWeakAreaCounts({});
+      setUsageLog(bootstrapUsage ? [bootstrapUsage] : []);
     } catch (err) {
       setError((err as Error).message);
     }
@@ -120,6 +94,9 @@ export function App() {
       setError("");
       const response = await sendChat(sessionId, chatInput);
       setChatLog((prev) => [...prev, response]);
+      if (response.usage) {
+        setUsageLog((prev) => [...prev, response.usage!]);
+      }
       setChatInput("");
 
       const weakAreas = response.meta?.weakAreasUpdate ?? [];
@@ -145,6 +122,9 @@ export function App() {
       setQuizFeedback(null);
       const response = await getNextQuestion(sessionId);
       setQuizQuestion(response);
+      if (response.usage) {
+        setUsageLog((prev) => [...prev, response.usage!]);
+      }
     } catch (err) {
       setError((err as Error).message);
     }
@@ -156,6 +136,9 @@ export function App() {
       setError("");
       const response = await submitAnswer(sessionId, quizQuestion.questionId, choice);
       setQuizFeedback(response);
+      if (response.usage) {
+        setUsageLog((prev) => [...prev, response.usage!]);
+      }
     } catch (err) {
       setError((err as Error).message);
     }
@@ -164,13 +147,15 @@ export function App() {
   return (
     <main className="layout">
       <h1>AI-102 Study Coach</h1>
-
       <section className="panel">
         <h2>Session Setup</h2>
+        <p className="hint">{bootstrapMessage}</p>
+        {bootstrapUsage && <p className="token-usage">{formatUsage(bootstrapUsage)}</p>}
+
         <div className="row">
           <label>Mode</label>
           <select value={mode} onChange={(e) => setMode(e.target.value)}>
-            {MODES.map((item) => (
+            {modeOptions.map((item) => (
               <option key={item} value={item}>
                 {item}
               </option>
@@ -180,9 +165,9 @@ export function App() {
         <div className="row">
           <label>Skill Outline Area</label>
           <select value={skillArea} onChange={(e) => setSkillArea(e.target.value)}>
-            {areas.map((area) => (
-              <option key={area.name} value={area.name}>
-                {area.name} ({area.weightPercent})
+            {areaOptions.map((area) => (
+              <option key={area} value={area}>
+                {area}
               </option>
             ))}
           </select>
@@ -191,74 +176,46 @@ export function App() {
           Start Session
         </button>
         {sessionId && <p>Session: {sessionId}</p>}
+        {sessionId && (
+          <div className="token-total-row" role="status" aria-live="polite">
+            <p className="meta-chip">PromptTokens: {tokenTotals.promptTokens}</p>
+            <p className="meta-chip">CompletionTokens: {tokenTotals.completionTokens}</p>
+            <p className="meta-chip">TotalTokens: {tokenTotals.totalTokens}</p>
+          </div>
+        )}
       </section>
 
-      <div className="interaction-grid">
-        <section className="panel">
-          <h2>Chat</h2>
-          <div className="row">
-            <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Ask an AI-102 question..." />
-            <button disabled={!sessionId} onClick={onSendChat}>
-              Send
-            </button>
-          </div>
-
-          {prioritizedWeakArea && <p className="hint">Prioritized next topic: {prioritizedWeakArea}</p>}
-
-          <ul className="chat-list">
-            {chatLog.map((entry, index) => (
-              <li key={`${entry.answer}-${index}`} className="chat-entry">
-                <p>{entry.answer}</p>
-                {entry.meta?.mcpVerified && <p className="verified">Verified from Learn MCP</p>}
-                {entry.refused && <p className="warning">{entry.refusalReason}</p>}
-
-                {entry.meta && (
-                  <details>
-                    <summary>Exam Focus</summary>
-                    <p>Skill area: {entry.meta.skillOutlineArea}</p>
-                    {entry.meta.mustKnow.length > 0 && <p>Must-know: {entry.meta.mustKnow.join("; ")}</p>}
-                    {entry.meta.examTraps.length > 0 && <p>Exam traps: {entry.meta.examTraps.join("; ")}</p>}
-                  </details>
-                )}
-
-                {entry.citations.length > 0 && (
-                  <ul className="citation-list">
-                    {entry.citations.map((citation) => (
-                      <li key={`${citation.url}-${citation.retrievedAt}`}>
-                        <a href={citation.url} target="_blank" rel="noreferrer">
-                          {formatCitation(citation)}
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </li>
-            ))}
-          </ul>
-        </section>
-
-        <section className="panel">
-          <h2>Quiz</h2>
-          <button disabled={!sessionId} onClick={onNextQuiz}>
-            Next Question
+      <section className="panel">
+        <h2>Chat</h2>
+        <div className="row">
+          <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Ask an AI-102 question..." />
+          <button disabled={!sessionId} onClick={onSendChat}>
+            Send
           </button>
-          {quizQuestion && (
-            <div>
-              <p>{quizQuestion.question}</p>
-              <div className="choices">
-                {(quizQuestion.choices ?? []).map((choice, index) => {
-                  const labeledChoice = withChoiceLabel(choice, index);
-                  return (
-                    <button key={labeledChoice} onClick={() => onAnswer(labeledChoice)}>
-                      {labeledChoice}
-                    </button>
-                  );
-                })}
-              </div>
+        </div>
 
-              {(quizQuestion.citations?.length ?? 0) > 0 && (
+        {prioritizedWeakArea && <p className="hint">Prioritized next topic: {prioritizedWeakArea}</p>}
+
+        <ul className="chat-list">
+          {chatLog.map((entry, index) => (
+            <li key={`${entry.answer}-${index}`} className="chat-entry">
+              <p>{entry.answer}</p>
+              {entry.usage && <p className="token-usage">{formatUsage(entry.usage)}</p>}
+              {entry.meta?.mcpVerified && <p className="verified">Verified from Learn MCP</p>}
+              {entry.refused && <p className="warning">{entry.refusalReason}</p>}
+
+              {entry.meta && (
+                <details>
+                  <summary>Exam Focus</summary>
+                  <p>Skill area: {entry.meta.skillOutlineArea}</p>
+                  {entry.meta.mustKnow.length > 0 && <p>Must-know: {entry.meta.mustKnow.join("; ")}</p>}
+                  {entry.meta.examTraps.length > 0 && <p>Exam traps: {entry.meta.examTraps.join("; ")}</p>}
+                </details>
+              )}
+
+              {entry.citations.length > 0 && (
                 <ul className="citation-list">
-                  {quizQuestion.citations!.map((citation) => (
+                  {entry.citations.map((citation) => (
                     <li key={`${citation.url}-${citation.retrievedAt}`}>
                       <a href={citation.url} target="_blank" rel="noreferrer">
                         {formatCitation(citation)}
@@ -267,15 +224,34 @@ export function App() {
                   ))}
                 </ul>
               )}
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section className="panel">
+        <h2>Quiz</h2>
+        <button disabled={!sessionId} onClick={onNextQuiz}>
+          Next Question
+        </button>
+        {quizQuestion && (
+          <div>
+            <p>{quizQuestion.question}</p>
+            {quizQuestion.usage && <p className="token-usage">{formatUsage(quizQuestion.usage)}</p>}
+            <div className="choices">
+              {(quizQuestion.choices ?? []).map((choice, index) => {
+                const labeledChoice = withChoiceLabel(choice, index);
+                return (
+                  <button key={labeledChoice} onClick={() => onAnswer(labeledChoice)}>
+                    {labeledChoice}
+                  </button>
+                );
+              })}
             </div>
-          )}
-          {quizFeedback && (
-            <div>
-              <p>{quizFeedback.correct ? "Correct" : "Incorrect"}</p>
-              <p>{quizFeedback.explanation}</p>
-              <p>{quizFeedback.memoryRule}</p>
+
+            {(quizQuestion.citations?.length ?? 0) > 0 && (
               <ul className="citation-list">
-                {quizFeedback.citations.map((citation) => (
+                {quizQuestion.citations!.map((citation) => (
                   <li key={`${citation.url}-${citation.retrievedAt}`}>
                     <a href={citation.url} target="_blank" rel="noreferrer">
                       {formatCitation(citation)}
@@ -283,13 +259,29 @@ export function App() {
                   </li>
                 ))}
               </ul>
-            </div>
-          )}
-        </section>
-      </div>
+            )}
+          </div>
+        )}
+        {quizFeedback && (
+          <div>
+            <p>{quizFeedback.correct ? "Correct" : "Incorrect"}</p>
+            <p>{quizFeedback.explanation}</p>
+            <p>{quizFeedback.memoryRule}</p>
+            {quizFeedback.usage && <p className="token-usage">{formatUsage(quizFeedback.usage)}</p>}
+            <ul className="citation-list">
+              {quizFeedback.citations.map((citation) => (
+                <li key={`${citation.url}-${citation.retrievedAt}`}>
+                  <a href={citation.url} target="_blank" rel="noreferrer">
+                    {formatCitation(citation)}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
 
       {error && <p className="error">{error}</p>}
     </main>
   );
 }
-
