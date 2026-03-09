@@ -5,6 +5,7 @@ namespace StudyCoach.BackendApi.Services;
 public interface ISessionStore
 {
     StudySession StartSession(string mode, string skillArea, string userId);
+    bool TryConfigureSessionForUser(Guid sessionId, string mode, string skillArea, string userId, out StudySession? session);
     bool ExistsForUser(Guid sessionId, string userId);
     bool TryGetSessionForUser(Guid sessionId, string userId, out StudySession? session);
 }
@@ -18,6 +19,20 @@ public sealed class InMemorySessionStore : ISessionStore
         var session = new StudySession(Guid.NewGuid(), mode, skillArea, userId, DateTimeOffset.UtcNow);
         _sessions[session.SessionId] = session;
         return session;
+    }
+
+    public bool TryConfigureSessionForUser(Guid sessionId, string mode, string skillArea, string userId, out StudySession? session)
+    {
+        if (!TryGetSessionForUser(sessionId, userId, out var existing) || existing is null)
+        {
+            session = null;
+            return false;
+        }
+
+        var updated = existing with { Mode = mode, SkillArea = skillArea };
+        _sessions[sessionId] = updated;
+        session = updated;
+        return true;
     }
 
     public bool ExistsForUser(Guid sessionId, string userId)
