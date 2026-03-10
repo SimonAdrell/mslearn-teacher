@@ -24,7 +24,9 @@ internal static class FoundryResponseParser
             return ParsedCoachResponse.Invalid(citationsResult.Error!);
         }
 
-        if (payload.ResponseType?.Trim().ToLowerInvariant() != "refusal" && citationsResult.Citations.Count == 0)
+        var responseType = payload.ResponseType?.Trim().ToLowerInvariant();
+        var requiresLearnCitations = responseType is not ("refusal" or "onboarding_options");
+        if (requiresLearnCitations && citationsResult.Citations.Count == 0)
         {
             return ParsedCoachResponse.Invalid("Foundry response citations must include at least one Learn citation.");
         }
