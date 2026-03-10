@@ -55,7 +55,21 @@ describe("App", () => {
     });
   });
 
-  it("uses option-only quiz chat and starts flow after session start", async () => {
+  it("renders start page first and moves to onboarding with progress context", async () => {
+    render(<App />);
+
+    expect(screen.getByRole("heading", { name: "AI-102 Study Coach" })).toBeInTheDocument();
+    const beginButton = screen.getByRole("button", { name: "Begin" });
+    expect(beginButton).toHaveClass("button-primary");
+
+    fireEvent.click(beginButton);
+
+    expect(screen.getByRole("heading", { name: "Set up your next study session" })).toBeInTheDocument();
+    expect(screen.getByText("Step 1 of 2")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Onboarding progress" })).toBeInTheDocument();
+  });
+
+  it("uses onboarding flow before starting the session", async () => {
     vi.mocked(api.getNextQuestion).mockResolvedValue({
       questionId: "q1",
       question: "Question 1",
@@ -71,14 +85,15 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(screen.queryByPlaceholderText("Ask an AI-102 question...")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "A) Option one" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Begin" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
 
     const startButton = screen.getByRole("button", { name: "Start Session" });
     await waitFor(() => expect(startButton).not.toBeDisabled());
     fireEvent.click(startButton);
 
     await screen.findByRole("button", { name: "A) Option one" });
+    expect(screen.getByText("Question")).toBeInTheDocument();
     expect(api.getNextQuestion).toHaveBeenCalledTimes(1);
   });
 
@@ -110,6 +125,9 @@ describe("App", () => {
       });
 
     render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Begin" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
 
     const startButton = screen.getByRole("button", { name: "Start Session" });
     await waitFor(() => expect(startButton).not.toBeDisabled());
@@ -156,6 +174,9 @@ describe("App", () => {
       });
 
     render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Begin" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
 
     const startButton = screen.getByRole("button", { name: "Start Session" });
     await waitFor(() => expect(startButton).not.toBeDisabled());
