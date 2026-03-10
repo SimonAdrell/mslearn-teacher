@@ -1,31 +1,25 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Runtime.Versioning;
 using Azure.AI.Projects;
 using Azure.AI.Projects.OpenAI;
 using Azure.Identity;
 using Microsoft.Extensions.Options;
+using StudyCoach.BackendApi.Application.Contracts;
+using StudyCoach.BackendApi.Domain.Study;
+using StudyCoach.BackendApi.Infrastructure.Foundry.Parsing;
 
-
-namespace StudyCoach.BackendApi.Services;
-
-public interface IFoundryStudyCoachClient
-{
-    Task<FoundryOnboardingResult> GetOnboardingOptionsAsync(Guid sessionId, CancellationToken cancellationToken);
-    Task<FoundryChatResult> GetChatReplyAsync(Guid sessionId, string skillArea, string message, CancellationToken cancellationToken);
-    Task<QuizQuestionResponse> GetNextQuizQuestionAsync(Guid sessionId, string skillArea, CancellationToken cancellationToken);
-    Task<QuizAnswerResponse> GradeQuizAnswerAsync(Guid sessionId, string skillArea, Guid questionId, string answer, CancellationToken cancellationToken);
-}
+namespace StudyCoach.BackendApi.Infrastructure.Foundry;
 
 [RequiresPreviewFeatures]
-public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
+public sealed class FoundryStudyCoachClient : IOnboardingCoach, IChatCoach, IQuizCoach
 {
     private const string LearnRefusalMessage =
         "I can't answer this from verified Microsoft Learn MCP sources right now. Please let me fetch relevant Learn MCP content first.";
 
     private const string ContractInstructions =
         "You are an AI-102 Study Coach. Use only Microsoft Learn MCP content and do not guess. " +
-        "Return structured output only and no markdown outside required formats. " +
-        "For teach/review/cram/quiz_question/quiz_feedback return exactly one JSON object with coach_text, response_type, purpose, skill_outline_area, must_know, exam_traps, citations[{title,url,retrieved_at}], mcp_verified, optional weak_areas_update, and optional quiz object. " +
+        "Return exactly one JSON object and no markdown. " +
+        "For teach/review/cram/quiz_question/quiz_feedback return coach_text, response_type, skill_outline_area, must_know, exam_traps, citations[{title,url,retrieved_at}], mcp_verified, optional weak_areas_update, and optional quiz object. " +
         "For onboarding_options, return response_type=onboarding_options with onboarding.prompt, onboarding.area_options[], and onboarding.mode_options[] using valid modes. " +
         "Use AI-102 (not A1-102). For substantive responses, mcp_verified must be true and include at least one learn.microsoft.com citation with retrieved_at in YYYY-MM-DD.";
 
@@ -38,7 +32,7 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
 
     private readonly FoundryOptions _options;
     private readonly ILogger<FoundryStudyCoachClient> _logger;
-    private readonly ProjectResponsesClient? _responsesClient;
+    private readonly ProjectResponsesClient _responsesClient;
     private readonly ConcurrentDictionary<Guid, string> _lastResponseIds = new();
 
     public FoundryStudyCoachClient(
@@ -48,14 +42,19 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
         _options = options.Value;
         _logger = logger;
 
-        if (_options.UseMockResponses)
-        {
-            return;
-        }
-
         if (string.IsNullOrWhiteSpace(_options.ProjectEndpoint))
         {
-            throw new InvalidOperationException("Foundry:ProjectEndpoint must be configured when UseMockResponses=false.");
+            throw new InvalidOperationException("Foundry:ProjectEndpoint must be configured.");
+        }
+
+        if (string.IsNullOrWhiteSpace(_options.AgentName))
+        {
+            throw new InvalidOperationException("Foundry:AgentName must be configured.");
+        }
+
+        if (string.IsNullOrWhiteSpace(_options.AgentVersion))
+        {
+            throw new InvalidOperationException("Foundry:AgentVersion must be configured.");
         }
 
         var projectClient = new AIProjectClient(new Uri(_options.ProjectEndpoint), new DefaultAzureCredential());
@@ -63,76 +62,37 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
         _responsesClient = projectClient.OpenAI.GetProjectResponsesClientForAgent(agentReference);
     }
 
-    public async Task<FoundryOnboardingResult> GetOnboardingOptionsAsync(Guid sessionId, CancellationToken cancellationToken)
+    public async Task<CoachOnboardingResult> GetOnboardingOptionsAsync(Guid sessionId, CancellationToken cancellationToken)
     {
-        if (_options.UseMockResponses)
-        {
-            return new FoundryOnboardingResult(
-                "Let's start your AI-102 session. Pick a skill area.",
-                DefaultAreaOptions,
-                [.. StudyModes.All],
-                new TokenUsageDto(50, 25, 75));
-        }
-
-        var result = await CreateAndParseResponseAsync(
-            sessionId,
-            BuildOnboardingPrompt(),
-            cancellationToken);
+        var result = await CreateAndParseResponseAsync(sessionId, BuildOnboardingPrompt(), cancellationToken);
 
         if (!result.ParseResult.IsValid || result.ParseResult.Onboarding is null)
         {
             _logger.LogWarning("Onboarding parse error for session {SessionId}: {Error}", sessionId, result.ParseResult.Error);
-            return new FoundryOnboardingResult(
+            return new CoachOnboardingResult(
                 "Let's start your AI-102 session. Pick a skill area.",
                 DefaultAreaOptions,
                 [.. StudyModes.All],
                 result.Usage);
         }
 
-        return new FoundryOnboardingResult(
+        return new CoachOnboardingResult(
             result.ParseResult.Onboarding.Prompt,
             result.ParseResult.Onboarding.AreaOptions,
             result.ParseResult.Onboarding.ModeOptions,
             result.Usage);
     }
 
-    public async Task<FoundryChatResult> GetChatReplyAsync(Guid sessionId, string skillArea, string message, CancellationToken cancellationToken)
+    public async Task<CoachChatResult> GetChatReplyAsync(Guid sessionId, string skillArea, string message, CancellationToken cancellationToken)
     {
-        if (_options.UseMockResponses)
-        {
-            var today = DateOnly.FromDateTime(DateTime.UtcNow);
-            var citations = new List<Citation>
-            {
-                new("AI-102 study guide", "https://learn.microsoft.com/en-us/credentials/certifications/resources/study-guides/ai-102", today)
-            };
-
-            var meta = new ChatMeta(
-                skillArea,
-                ["Match each scenario to the correct Azure AI service"],
-                ["Confusing Azure AI Language with Azure OpenAI for classic intent/entity tasks"],
-                true,
-                ["Implement natural language processing solutions"]);
-
-            return new FoundryChatResult(
-                $"Purpose: Focus the current study step on {skillArea}.\n\nWhat to memorize: Azure AI Language handles intent/entity extraction.",
-                citations,
-                meta,
-                false,
-                null,
-                new TokenUsageDto(80, 45, 125));
-        }
-
-        var result = await CreateAndParseResponseAsync(
-            sessionId,
-            BuildChatPrompt(skillArea, message),
-            cancellationToken);
+        var result = await CreateAndParseResponseAsync(sessionId, BuildChatPrompt(skillArea, message), cancellationToken);
 
         if (!result.ParseResult.IsValid)
         {
-            return new FoundryChatResult(LearnRefusalMessage, [], null, true, result.ParseResult.Error, result.Usage);
+            return new CoachChatResult(LearnRefusalMessage, [], null, true, result.ParseResult.Error, result.Usage);
         }
 
-        return new FoundryChatResult(
+        return new CoachChatResult(
             result.ParseResult.CoachText,
             result.ParseResult.Citations,
             result.ParseResult.ChatMeta,
@@ -143,29 +103,7 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
 
     public async Task<QuizQuestionResponse> GetNextQuizQuestionAsync(Guid sessionId, string skillArea, CancellationToken cancellationToken)
     {
-        if (_options.UseMockResponses)
-        {
-            return new QuizQuestionResponse(
-                Guid.NewGuid(),
-                "Which service best matches AI-102 intent and entity extraction scenarios?",
-                [
-                    "A) Azure AI Language",
-                    "B) Azure AI Vision",
-                    "C) Azure AI Search"
-                ],
-                [
-                    new Citation(
-                        "What is Azure AI Language?",
-                        "https://learn.microsoft.com/en-us/azure/ai-services/language-service/overview",
-                        DateOnly.FromDateTime(DateTime.UtcNow))
-                ],
-                new TokenUsageDto(70, 35, 105));
-        }
-
-        var result = await CreateAndParseResponseAsync(
-            sessionId,
-            BuildQuizPrompt(skillArea),
-            cancellationToken);
+        var result = await CreateAndParseResponseAsync(sessionId, BuildQuizPrompt(skillArea), cancellationToken);
 
         if (!result.ParseResult.IsValid || result.ParseResult.Quiz is null)
         {
@@ -184,32 +122,7 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
 
     public async Task<QuizAnswerResponse> GradeQuizAnswerAsync(Guid sessionId, string skillArea, Guid questionId, string answer, CancellationToken cancellationToken)
     {
-        if (_options.UseMockResponses)
-        {
-            var correct = answer.StartsWith("A", StringComparison.OrdinalIgnoreCase) ||
-                          answer.Contains("Azure AI Language", StringComparison.OrdinalIgnoreCase);
-
-            var mockExplanation = correct
-                ? "Correct. Azure AI Language is the expected service for intent/entity extraction scenarios."
-                : "Incorrect. For intent/entity extraction in AI-102, Azure AI Language is the expected service.";
-
-            return new QuizAnswerResponse(
-                correct,
-                mockExplanation,
-                "Intent/entity extraction maps to Azure AI Language.",
-                [
-                    new Citation(
-                        "What is Azure AI Language?",
-                        "https://learn.microsoft.com/en-us/azure/ai-services/language-service/overview",
-                        DateOnly.FromDateTime(DateTime.UtcNow))
-                ],
-                new TokenUsageDto(60, 30, 90));
-        }
-
-        var result = await CreateAndParseResponseAsync(
-            sessionId,
-            BuildQuizFeedbackPrompt(skillArea, answer),
-            cancellationToken);
+        var result = await CreateAndParseResponseAsync(sessionId, BuildQuizFeedbackPrompt(skillArea, answer), cancellationToken);
 
         if (!result.ParseResult.IsValid || result.ParseResult.Quiz is null)
         {
@@ -235,13 +148,6 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
 
     private async Task<FoundryParseWithUsageResult> CreateAndParseResponseAsync(Guid sessionId, string message, CancellationToken cancellationToken)
     {
-        if (_responsesClient is null ||
-            string.IsNullOrWhiteSpace(_options.AgentName) ||
-            string.IsNullOrWhiteSpace(_options.AgentVersion))
-        {
-            throw new InvalidOperationException("Foundry client is not configured. Set Foundry:AgentName and Foundry:AgentVersion and disable mock responses.");
-        }
-
         _lastResponseIds.TryGetValue(sessionId, out var previousResponseId);
 
         var composedMessage = $"{ContractInstructions}\n\n{message}";
@@ -252,12 +158,12 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
         if (string.IsNullOrWhiteSpace(output))
         {
             _logger.LogWarning("Foundry response for session {SessionId} did not include output text.", sessionId);
-            return new FoundryParseWithUsageResult(CoachParseResult.Invalid("Foundry response did not include output text."), usage);
+            return new FoundryParseWithUsageResult(ParsedCoachResponse.Invalid("Foundry response did not include output text."), usage);
         }
 
         _lastResponseIds[sessionId] = response.Value.Id;
 
-        return new FoundryParseWithUsageResult(CoachResponseParser.Parse(output), usage);
+        return new FoundryParseWithUsageResult(FoundryResponseParser.Parse(output), usage);
     }
 
     private static TokenUsageDto? ToTokenUsageDto(object? usage)
@@ -323,7 +229,7 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
         ];
     }
 
-    private static bool IsCorrectAnswer(string learnerAnswer, CoachQuizMeta quiz)
+    private static bool IsCorrectAnswer(string learnerAnswer, ParsedQuizMeta quiz)
     {
         if (string.IsNullOrWhiteSpace(quiz.CorrectOption))
         {
@@ -344,30 +250,3 @@ public sealed class FoundryStudyCoachClient : IFoundryStudyCoachClient
         return normalizedAnswer.Contains(expectedText, StringComparison.OrdinalIgnoreCase);
     }
 }
-
-public record FoundryOnboardingResult(
-    string Prompt,
-    IReadOnlyList<string> AreaOptions,
-    IReadOnlyList<string> ModeOptions,
-    TokenUsageDto? Usage = null);
-
-public record FoundryChatResult(
-    string Answer,
-    IReadOnlyList<Citation> Citations,
-    ChatMeta? Meta,
-    bool Refused,
-    string? RefusalReason,
-    TokenUsageDto? Usage = null);
-
-internal sealed record FoundryParseWithUsageResult(CoachParseResult ParseResult, TokenUsageDto? Usage);
-
-public sealed class FoundryOptions
-{
-    public string ProjectEndpoint { get; set; } = "";
-    public string AgentName { get; set; } = "";
-    public string AgentVersion { get; set; } = "";
-    public bool UseMockResponses { get; set; } = true;
-}
-
-
-

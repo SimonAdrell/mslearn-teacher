@@ -1,6 +1,12 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using Microsoft.AspNetCore.Mvc;
-using StudyCoach.BackendApi.Services;
+using StudyCoach.BackendApi.Errors;
+using StudyCoach.BackendApi.Application.Chat;
+using StudyCoach.BackendApi.Application.Common;
+using StudyCoach.BackendApi.Application.Contracts;
+using StudyCoach.BackendApi.Application.Quiz;
+using StudyCoach.BackendApi.Application.Session;
+using StudyCoach.BackendApi.Application.Skills;
 
 namespace StudyCoach.BackendApi.Controllers;
 
@@ -8,137 +14,78 @@ namespace StudyCoach.BackendApi.Controllers;
 [Route("api/study")]
 public sealed class StudyController : ControllerBase
 {
-    private const string LearnRefusalMessage =
-        "I can't answer this from verified Microsoft Learn MCP sources right now. Please let me fetch relevant Learn MCP content first.";
-
-    private readonly ISessionStore _sessionStore;
-    private readonly IFoundryStudyCoachClient _coachClient;
-    private readonly ISkillsOutlineProvider _skillsOutlineProvider;
+    private readonly IStudySessionService _sessionService;
+    private readonly IStudyChatService _chatService;
+    private readonly IStudyQuizService _quizService;
+    private readonly IStudySkillsService _skillsService;
 
     public StudyController(
-        ISessionStore sessionStore,
-        IFoundryStudyCoachClient coachClient,
-        ISkillsOutlineProvider skillsOutlineProvider)
+        IStudySessionService sessionService,
+        IStudyChatService chatService,
+        IStudyQuizService quizService,
+        IStudySkillsService skillsService)
     {
-        _sessionStore = sessionStore;
-        _coachClient = coachClient;
-        _skillsOutlineProvider = skillsOutlineProvider;
+        _sessionService = sessionService;
+        _chatService = chatService;
+        _quizService = quizService;
+        _skillsService = skillsService;
     }
 
     [HttpPost("session/start")]
-    public ActionResult<StartSessionResponse> StartSession([FromBody] StartSessionRequest request)
+    public IActionResult StartSession([FromBody] StartSessionRequest request)
     {
-        if (!StudyModes.All.Contains(request.Mode, StringComparer.OrdinalIgnoreCase))
-        {
-            return BadRequest(new { error = "Unsupported mode." });
-        }
-
-        if (string.IsNullOrWhiteSpace(request.SkillArea))
-        {
-            return BadRequest(new { error = "Skill area is required." });
-        }
-
-        var userId = GetCurrentUserId();
-        var session = _sessionStore.StartSession(request.Mode, request.SkillArea, userId);
-
-        return Ok(new StartSessionResponse(
-            session.SessionId,
-            session.Mode,
-            session.SkillArea,
-            $"Session started in {session.Mode} mode for {session.SkillArea}."));
+        var result = _sessionService.StartSession(request, GetCurrentUserId());
+        return ToActionResult(result, BadRequest);
     }
 
     [HttpPost("session/bootstrap")]
-    public async Task<ActionResult<BootstrapSessionResponse>> BootstrapSession(CancellationToken cancellationToken)
+    public async Task<IActionResult> BootstrapSession(CancellationToken cancellationToken)
     {
-        var userId = GetCurrentUserId();
-        var session = _sessionStore.StartSession("Learn", "onboarding-pending", userId);
-        var onboarding = await _coachClient.GetOnboardingOptionsAsync(session.SessionId, cancellationToken);
-
-        return Ok(new BootstrapSessionResponse(
-            session.SessionId,
-            onboarding.Prompt,
-            onboarding.AreaOptions,
-            onboarding.ModeOptions,
-            onboarding.Usage));
+        var response = await _sessionService.BootstrapSessionAsync(GetCurrentUserId(), cancellationToken);
+        return Ok(response);
     }
 
     [HttpPost("chat")]
-    public async Task<ActionResult<ChatResponse>> Chat([FromBody] ChatRequest request, CancellationToken cancellationToken)
+    public async Task<IActionResult> Chat([FromBody] ChatRequest request, CancellationToken cancellationToken)
     {
-        if (!_sessionStore.TryGetSessionForUser(request.SessionId, GetCurrentUserId(), out var session) || session is null)
-        {
-            return NotFound(new { error = "Session not found." });
-        }
-
-        var chatResult = await _coachClient.GetChatReplyAsync(request.SessionId, session.SkillArea, request.Message, cancellationToken);
-        if (chatResult.Refused || chatResult.Citations.Count == 0)
-        {
-            return Ok(new ChatResponse(
-                LearnRefusalMessage,
-                [],
-                true,
-                chatResult.RefusalReason ?? "Missing or invalid Learn MCP citations.",
-                null,
-                chatResult.Usage));
-        }
-
-        return Ok(new ChatResponse(chatResult.Answer, chatResult.Citations, false, null, chatResult.Meta, chatResult.Usage));
+        var result = await _chatService.ReplyAsync(request, GetCurrentUserId(), cancellationToken);
+        return ToActionResult(result, NotFound);
     }
 
     [HttpPost("quiz/next")]
-    public async Task<ActionResult<QuizQuestionResponse>> NextQuizQuestion([FromBody] QuizNextRequest request, CancellationToken cancellationToken)
+    public async Task<IActionResult> NextQuizQuestion([FromBody] QuizNextRequest request, CancellationToken cancellationToken)
     {
-        if (!_sessionStore.TryGetSessionForUser(request.SessionId, GetCurrentUserId(), out var session) || session is null)
-        {
-            return NotFound(new { error = "Session not found." });
-        }
-
-        var question = await _coachClient.GetNextQuizQuestionAsync(request.SessionId, session.SkillArea, cancellationToken);
-        if ((question.Citations?.Count ?? 0) == 0)
-        {
-            return Ok(new QuizQuestionResponse(Guid.NewGuid(), LearnRefusalMessage, null, [], question.Usage));
-        }
-
-        return Ok(question);
+        var result = await _quizService.NextQuestionAsync(request, GetCurrentUserId(), cancellationToken);
+        return ToActionResult(result, NotFound);
     }
 
     [HttpPost("quiz/answer")]
-    public async Task<ActionResult<QuizAnswerResponse>> GradeQuizAnswer([FromBody] QuizAnswerRequest request, CancellationToken cancellationToken)
+    public async Task<IActionResult> GradeQuizAnswer([FromBody] QuizAnswerRequest request, CancellationToken cancellationToken)
     {
-        if (!_sessionStore.TryGetSessionForUser(request.SessionId, GetCurrentUserId(), out var session) || session is null)
-        {
-            return NotFound(new { error = "Session not found." });
-        }
-
-        var feedback = await _coachClient.GradeQuizAnswerAsync(
-            request.SessionId,
-            session.SkillArea,
-            request.QuestionId,
-            request.Answer,
-            cancellationToken);
-
-        if (feedback.Citations.Count == 0)
-        {
-            return Ok(new QuizAnswerResponse(
-                false,
-                LearnRefusalMessage,
-                "Always verify from Learn MCP.",
-                [],
-                feedback.Usage));
-        }
-
-        return Ok(feedback);
+        var result = await _quizService.GradeAnswerAsync(request, GetCurrentUserId(), cancellationToken);
+        return ToActionResult(result, NotFound);
     }
 
     [HttpGet("skills-outline")]
-    public async Task<ActionResult<SkillsOutlineResponse>> SkillsOutline(CancellationToken cancellationToken)
+    public async Task<IActionResult> SkillsOutline(CancellationToken cancellationToken)
     {
-        return Ok(await _skillsOutlineProvider.GetOutlineAsync(cancellationToken));
+        return Ok(await _skillsService.GetOutlineAsync(cancellationToken));
     }
 
     private string GetCurrentUserId()
     {
         return User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "local-dev-user";
     }
+
+    private IActionResult ToActionResult<T>(ApplicationResult<T> result, Func<object, IActionResult> failure)
+    {
+        if (result.IsSuccess)
+        {
+            return Ok(result.Value);
+        }
+
+        var error = result.Error!;
+        return failure(new ApiError(error.Code, error.Message));
+    }
 }
+

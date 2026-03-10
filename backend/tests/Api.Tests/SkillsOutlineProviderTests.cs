@@ -1,7 +1,9 @@
-using FluentAssertions;
+﻿using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using StudyCoach.BackendApi.Services;
+using StudyCoach.BackendApi.Application.Contracts;
+using StudyCoach.BackendApi.Application.Skills;
+using StudyCoach.BackendApi.Infrastructure.LearnMcp;
 
 namespace Api.Tests;
 
