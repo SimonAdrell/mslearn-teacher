@@ -1,7 +1,8 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
-using StudyCoach.BackendApi.Services;
+using StudyCoach.BackendApi.Application.Contracts;
+using StudyCoach.BackendApi.Infrastructure.Foundry;
 
 namespace Api.Tests;
 
@@ -52,7 +53,7 @@ public class StudyEndpointsTests
     [Fact]
     public async Task Chat_WithoutCitations_ReturnsRefusalMessageAndUsage()
     {
-        await using var factory = new StudyCoachApiFactory(new NoCitationFoundryClient());
+        await using var factory = new StudyCoachApiFactory(new NoCitationCoach());
         using var client = factory.CreateAuthenticatedClient();
 
         var session = await (await client.PostAsJsonAsync("/api/study/session/start", new StartSessionRequest("Quiz", "Implement generative AI solutions")))
@@ -74,7 +75,7 @@ public class StudyEndpointsTests
     [Fact]
     public async Task QuizNext_WithoutCitations_ReturnsRefusalPromptAndUsage()
     {
-        await using var factory = new StudyCoachApiFactory(new NoCitationFoundryClient());
+        await using var factory = new StudyCoachApiFactory(new NoCitationCoach());
         using var client = factory.CreateAuthenticatedClient();
 
         var session = await (await client.PostAsJsonAsync("/api/study/session/start", new StartSessionRequest("Quiz", "Implement generative AI solutions")))
@@ -106,19 +107,19 @@ public class StudyEndpointsTests
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
-    private sealed class NoCitationFoundryClient : IFoundryStudyCoachClient
+    private sealed class NoCitationCoach : IOnboardingCoach, IChatCoach, IQuizCoach
     {
         private static readonly TokenUsageDto Usage = new(12, 8, 20);
 
-        public Task<FoundryOnboardingResult> GetOnboardingOptionsAsync(Guid sessionId, CancellationToken cancellationToken) =>
-            Task.FromResult(new FoundryOnboardingResult(
+        public Task<CoachOnboardingResult> GetOnboardingOptionsAsync(Guid sessionId, CancellationToken cancellationToken) =>
+            Task.FromResult(new CoachOnboardingResult(
                 "Pick a skill area.",
                 ["Implement natural language processing solutions (30-35%)"],
                 ["Learn", "Quiz"],
                 Usage));
 
-        public Task<FoundryChatResult> GetChatReplyAsync(Guid sessionId, string skillArea, string message, CancellationToken cancellationToken) =>
-            Task.FromResult(new FoundryChatResult("answer-without-source", [], null, true, "No citations", Usage));
+        public Task<CoachChatResult> GetChatReplyAsync(Guid sessionId, string skillArea, string message, CancellationToken cancellationToken) =>
+            Task.FromResult(new CoachChatResult("answer-without-source", [], null, true, "No citations", Usage));
 
         public Task<QuizQuestionResponse> GetNextQuizQuestionAsync(Guid sessionId, string skillArea, CancellationToken cancellationToken) =>
             Task.FromResult(new QuizQuestionResponse(Guid.NewGuid(), "q", ["A) a", "B) b", "C) c"], [], Usage));

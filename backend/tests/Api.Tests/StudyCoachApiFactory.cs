@@ -1,6 +1,5 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using System.Text.Encodings.Web;
-using StudyCoach.BackendApi.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -8,10 +7,12 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using StudyCoach.BackendApi.Application.Contracts;
+using StudyCoach.BackendApi.Infrastructure.Foundry;
 
 namespace Api.Tests;
 
-public sealed class StudyCoachApiFactory(IFoundryStudyCoachClient? replacementClient = null) : WebApplicationFactory<Program>
+public sealed class StudyCoachApiFactory(object? replacementCoach = null) : WebApplicationFactory<Program>
 {
     public HttpClient CreateAuthenticatedClient(string userId = "test-user")
     {
@@ -37,12 +38,68 @@ public sealed class StudyCoachApiFactory(IFoundryStudyCoachClient? replacementCl
                 options.DefaultChallengeScheme = TestAuthHandler.SchemeName;
             });
 
-            if (replacementClient is not null)
+            var coach = replacementCoach ?? new DefaultTestCoach();
+
+            if (coach is IOnboardingCoach onboardingCoach)
             {
-                services.RemoveAll<IFoundryStudyCoachClient>();
-                services.AddSingleton(replacementClient);
+                services.RemoveAll<IOnboardingCoach>();
+                services.AddSingleton(onboardingCoach);
+            }
+
+            if (coach is IChatCoach chatCoach)
+            {
+                services.RemoveAll<IChatCoach>();
+                services.AddSingleton(chatCoach);
+            }
+
+            if (coach is IQuizCoach quizCoach)
+            {
+                services.RemoveAll<IQuizCoach>();
+                services.AddSingleton(quizCoach);
             }
         });
+    }
+
+    private sealed class DefaultTestCoach : IOnboardingCoach, IChatCoach, IQuizCoach
+    {
+        private static readonly TokenUsageDto Usage = new(10, 15, 25);
+        private static readonly IReadOnlyList<Citation> Citations =
+        [
+            new Citation(
+                "AI-102 study guide",
+                "https://learn.microsoft.com/en-us/credentials/certifications/resources/study-guides/ai-102",
+                DateOnly.Parse("2026-03-06"))
+        ];
+
+        public Task<CoachOnboardingResult> GetOnboardingOptionsAsync(Guid sessionId, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new CoachOnboardingResult(
+                "Pick a skill area.",
+                ["Implement natural language processing solutions (30-35%)"],
+                ["Learn", "Quiz"],
+                Usage));
+        }
+
+        public Task<CoachChatResult> GetChatReplyAsync(Guid sessionId, string skillArea, string message, CancellationToken cancellationToken)
+        {
+            var meta = new ChatMeta(skillArea, ["Know X"], ["Trap Y"], true, null);
+            return Task.FromResult(new CoachChatResult("Here is a grounded answer.", Citations, meta, false, null, Usage));
+        }
+
+        public Task<QuizQuestionResponse> GetNextQuizQuestionAsync(Guid sessionId, string skillArea, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new QuizQuestionResponse(
+                Guid.NewGuid(),
+                "Which service is best for intent classification?",
+                ["A) Azure AI Language", "B) Azure AI Search", "C) Azure AI Vision"],
+                Citations,
+                Usage));
+        }
+
+        public Task<QuizAnswerResponse> GradeQuizAnswerAsync(Guid sessionId, string skillArea, Guid questionId, string answer, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new QuizAnswerResponse(true, "Correct.", "Map task to service first.", Citations, Usage));
+        }
     }
 }
 

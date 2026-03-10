@@ -1,20 +1,17 @@
-using FluentAssertions;
-using StudyCoach.BackendApi.Services;
+﻿using FluentAssertions;
+using StudyCoach.BackendApi.Infrastructure.Foundry.Parsing;
 
 namespace Api.Tests;
 
 public class CoachResponseParserTests
 {
     [Fact]
-    public void Parse_WithValidCoachMeta_ReturnsStructuredResult()
+    public void Parse_WithValidJsonObject_ReturnsStructuredResult()
     {
         const string output = """
-Purpose: Drill NLP service selection.
-
-```coach_meta
 {
+  "coach_text": "Purpose: Drill NLP service selection.",
   "response_type": "teach",
-  "purpose": "Teach core NLP mapping",
   "skill_outline_area": "Implement natural language processing solutions",
   "must_know": ["Use Azure AI Language for intent and entities"],
   "exam_traps": ["Choosing Azure AI Search for intent classification"],
@@ -27,10 +24,9 @@ Purpose: Drill NLP service selection.
   ],
   "mcp_verified": true
 }
-```
 """;
 
-        var result = CoachResponseParser.Parse(output);
+        var result = FoundryResponseParser.Parse(output);
 
         result.IsValid.Should().BeTrue();
         result.Citations.Should().HaveCount(1);
@@ -43,12 +39,9 @@ Purpose: Drill NLP service selection.
     public void Parse_WithOnboardingOptions_ReturnsOnboardingVariant()
     {
         const string output = """
-Let's start your AI-102 session.
-
-```coach_meta
 {
+  "coach_text": "Let's start your AI-102 session.",
   "response_type": "onboarding_options",
-  "purpose": "Provide onboarding options",
   "mcp_verified": false,
   "onboarding": {
     "prompt": "Pick a skill area.",
@@ -59,10 +52,9 @@ Let's start your AI-102 session.
     "mode_options": ["Learn", "Quiz"]
   }
 }
-```
 """;
 
-        var result = CoachResponseParser.Parse(output);
+        var result = FoundryResponseParser.Parse(output);
 
         result.IsValid.Should().BeTrue();
         result.Onboarding.Should().NotBeNull();
@@ -74,12 +66,9 @@ Let's start your AI-102 session.
     public void Parse_WithInvalidOnboardingMode_ReturnsInvalidResult()
     {
         const string output = """
-Setup options.
-
-```coach_meta
 {
+  "coach_text": "Setup options.",
   "response_type": "onboarding_options",
-  "purpose": "Provide onboarding options",
   "mcp_verified": false,
   "onboarding": {
     "prompt": "Pick.",
@@ -87,53 +76,21 @@ Setup options.
     "mode_options": ["Bootcamp"]
   }
 }
-```
 """;
 
-        var result = CoachResponseParser.Parse(output);
+        var result = FoundryResponseParser.Parse(output);
 
         result.IsValid.Should().BeFalse();
         result.Error.Should().Contain("supported study modes");
     }
 
     [Fact]
-    public void Parse_WithoutCoachMeta_ReturnsInvalidResult()
+    public void Parse_WithNonJsonResponse_ReturnsInvalidResult()
     {
-        var result = CoachResponseParser.Parse("No structured block here");
+        var result = FoundryResponseParser.Parse("coach_text: not valid json");
 
         result.IsValid.Should().BeFalse();
-        result.Error.Should().Contain("JSON object or a coach_meta block");
-    }
-
-
-    [Fact]
-    public void Parse_WithValidJsonObject_ReturnsStructuredResult()
-    {
-        const string output = """
-{
-  "coach_text": "Purpose: Drill NLP service selection.",
-  "response_type": "teach",
-  "purpose": "Teach core NLP mapping",
-  "skill_outline_area": "Implement natural language processing solutions",
-  "must_know": ["Use Azure AI Language for intent and entities"],
-  "exam_traps": ["Choosing Azure AI Search for intent classification"],
-  "citations": [
-    {
-      "title": "What is Azure AI Language?",
-      "url": "https://learn.microsoft.com/en-us/azure/ai-services/language-service/overview",
-      "retrieved_at": "2026-03-06"
-    }
-  ],
-  "mcp_verified": true
-}
-""";
-
-        var result = CoachResponseParser.Parse(output);
-
-        result.IsValid.Should().BeTrue();
-        result.Citations.Should().HaveCount(1);
-        result.ChatMeta.Should().NotBeNull();
-        result.CoachText.Should().Contain("Drill NLP");
+        result.Error.Should().Contain("single JSON object");
     }
 
     [Fact]
@@ -142,7 +99,6 @@ Setup options.
         const string output = """
 {
   "response_type": "teach",
-  "purpose": "Teach core NLP mapping",
   "skill_outline_area": "Implement natural language processing solutions",
   "must_know": ["A"],
   "exam_traps": ["B"],
@@ -157,21 +113,19 @@ Setup options.
 }
 """;
 
-        var result = CoachResponseParser.Parse(output);
+        var result = FoundryResponseParser.Parse(output);
 
         result.IsValid.Should().BeFalse();
         result.Error.Should().Contain("coach_text");
     }
+
     [Fact]
     public void Parse_WithNonLearnCitation_ReturnsInvalidResult()
     {
         const string output = """
-coach_text: Check references.
-
-```coach_meta
 {
+  "coach_text": "Check references.",
   "response_type": "teach",
-  "purpose": "Teach references",
   "skill_outline_area": "Implement natural language processing solutions",
   "must_know": ["A"],
   "exam_traps": ["B"],
@@ -184,13 +138,11 @@ coach_text: Check references.
   ],
   "mcp_verified": true
 }
-```
 """;
 
-        var result = CoachResponseParser.Parse(output);
+        var result = FoundryResponseParser.Parse(output);
 
         result.IsValid.Should().BeFalse();
         result.Error.Should().Contain("Microsoft Learn");
     }
 }
-
